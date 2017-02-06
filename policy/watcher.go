@@ -705,6 +705,9 @@ func (w *watcher) cleanupIpsets() error {
 
 		if staleIPSets != nil && len(staleIPSets) > 0 {
 			for _, ipset := range staleIPSets {
+				if ipset == "" {
+					continue
+				}
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", ipset)
 				err := executeCommand(deleteCmdStr)
 				if err != nil {
@@ -789,14 +792,18 @@ func (w *watcher) deleteBaseRules() error {
 }
 
 func (w *watcher) flushAndDeleteChain() error {
-	if err := w.run("iptables", "-w", "-F", cattleNetworkPolicyChainName); err != nil {
-		logrus.Errorf("Error flushing the chain: %v", cattleNetworkPolicyChainName)
-		return err
-	}
+	checkRule := fmt.Sprintf("iptables -w -C %v -d %v -s %v -j %v",
+		hookToChain, w.defaultSubnet, w.defaultSubnet, cattleNetworkPolicyChainName)
+	if executeCommandNoStderr(checkRule) == nil {
+		if err := w.run("iptables", "-w", "-F", cattleNetworkPolicyChainName); err != nil {
+			logrus.Errorf("Error flushing the chain: %v", cattleNetworkPolicyChainName)
+			return err
+		}
 
-	if err := w.run("iptables", "-X", cattleNetworkPolicyChainName); err != nil {
-		logrus.Errorf("Error deleting the chain: %v", cattleNetworkPolicyChainName)
-		return err
+		if err := w.run("iptables", "-X", cattleNetworkPolicyChainName); err != nil {
+			logrus.Errorf("Error deleting the chain: %v", cattleNetworkPolicyChainName)
+			return err
+		}
 	}
 
 	return nil
@@ -819,6 +826,7 @@ func (w *watcher) cleanup() error {
 	// remove the ipsets
 	if err := w.cleanupIpsets(); err != nil {
 		logrus.Errorf("Error cleaning ipsets: %v", err)
+		return err
 	}
 
 	return nil
