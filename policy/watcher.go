@@ -225,6 +225,23 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 	return local, all
 }
 
+// This function returns IP addresses of local and all containers of the service
+// on the default network
+func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool, map[string]bool) {
+	local := make(map[string]bool)
+	all := make(map[string]bool)
+	for _, aContainer := range service.Containers {
+		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+			if aContainer.HostUUID == w.selfHost.UUID {
+				local[aContainer.PrimaryIp] = true
+			}
+			all[aContainer.PrimaryIp] = true
+		}
+	}
+
+	return local, all
+}
+
 func (w *watcher) generateHash(s string) (string, error) {
 	hash, err := hashstructure.Hash(s, nil)
 	if err != nil {
@@ -295,13 +312,13 @@ func (w *watcher) defaultSystemStackPolicies() (map[string]Rule, error) {
 
 func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, error) {
 	logrus.Debugf("withinStackHandler")
-	withinRulesMap := make(map[string]Rule)
+	withinStackRulesMap := make(map[string]Rule)
 	for _, stack := range w.stacks {
 		if stack.System {
 			continue
 		}
 		local, all := w.getInfoFromStack(stack)
-		ruleName := fmt.Sprintf("within.%v", stack.Name)
+		ruleName := fmt.Sprintf("within.stack.%v", stack.Name)
 		if len(local) > 0 {
 			isDstSystem := false
 			isSrcSystem := false
@@ -315,15 +332,15 @@ func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, erro
 			}
 			r.action = p.Action
 
-			withinRulesMap[ruleName] = *r
+			withinStackRulesMap[ruleName] = *r
 		} else {
 			logrus.Debugf("stack: %v doesn't have any local containers, skipping", stack.Name)
 			continue
 		}
 	}
 
-	logrus.Debugf("withinRulesMap: %v", withinRulesMap)
-	return withinRulesMap, nil
+	logrus.Debugf("withinStackRulesMap: %v", withinStackRulesMap)
+	return withinStackRulesMap, nil
 }
 
 func (w *watcher) buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem bool, ruleName string, local, all map[string]bool) (*Rule, error) {
@@ -396,8 +413,31 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem bool, r
 
 func (w *watcher) withinServiceHandler(p NetworkPolicyRule) (map[string]Rule, error) {
 	logrus.Debugf("withinServiceHandler")
+	withinServiceRulesMap := make(map[string]Rule)
+	for _, service := range w.services {
+		if service.System {
+			continue
+		}
+		local, all := w.getInfoFromService(service)
+		ruleName := fmt.Sprintf("within.service.%v.%v", service.StackName, service.Name)
+		if len(local) > 0 {
+			isDstSystem := false
+			isSrcSystem := false
+			r, err := w.buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem, ruleName, local, all)
+			if err != nil {
+				return nil, err
+			}
+			r.action = p.Action
 
-	return nil, nil
+			withinServiceRulesMap[ruleName] = *r
+		} else {
+			logrus.Debugf("service: %v doesn't have any local containers, skipping", service.Name)
+			continue
+		}
+	}
+
+	logrus.Debugf("withinServiceRulesMap: %v", withinServiceRulesMap)
+	return withinServiceRulesMap, nil
 }
 
 func (w *watcher) withinLinkHandler(p NetworkPolicyRule) (map[string]Rule, error) {
@@ -542,6 +582,12 @@ func (w *watcher) fetchInfoFromMetadata() error {
 		return err
 	}
 
+	services, err := w.c.GetServices()
+	if err != nil {
+		logrus.Errorf("Error getting stacks from metadata: %v", err)
+		return err
+	}
+
 	containers, err := w.c.GetContainers()
 	if err != nil {
 		logrus.Errorf("Error getting containers from metadata: %v", err)
@@ -572,6 +618,7 @@ func (w *watcher) fetchInfoFromMetadata() error {
 	w.defaultSubnet = defaultSubnet
 	w.selfHost = &selfHost
 	w.stacks = stacks
+	w.services = services
 	w.containers = containers
 
 	return nil
