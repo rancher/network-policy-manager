@@ -37,6 +37,7 @@ type watcher struct {
 	stacks             []metadata.Stack
 	services           []metadata.Service
 	containers         []metadata.Container
+	servicesMapByName  map[string]*metadata.Service
 	appliedIPsets      map[string]map[string]bool
 	appliedRules       map[int]map[string]Rule
 	ipsets             map[string]map[string]bool
@@ -49,12 +50,12 @@ type watcher struct {
 
 // Rule is used to store the info need to be a iptables rule
 type Rule struct {
-	dst      string
-	src      string
-	ports    []string
-	stateful bool
-	action   string
-	system   bool
+	dst        string
+	src        string
+	ports      []string
+	isStateful bool
+	action     string
+	system     bool
 }
 
 func setupKernelParameters() error {
@@ -64,25 +65,65 @@ func setupKernelParameters() error {
 
 func (rule *Rule) iptables(defaultPolicyAction string) []byte {
 	buf := &bytes.Buffer{}
-	buf.WriteString(fmt.Sprintf("-A %v ", cattleNetworkPolicyChainName))
-	if rule.dst != "" {
-		buf.WriteString(fmt.Sprintf("-m set --match-set %v dst ", rule.dst))
-	}
-
-	if rule.src != "" {
-		buf.WriteString(fmt.Sprintf("-m set --match-set %v src ", rule.src))
-	}
-
-	// TODO: Check for ports/ stateful etc
-
 	var ruleTarget string
-	if rule.action == ActionAllow {
-		ruleTarget = "RETURN"
-	} else {
-		ruleTarget = "DROP"
-	}
 
-	buf.WriteString(fmt.Sprintf("-j %v\n", ruleTarget))
+	// TODO: Check for ports etc
+
+	if rule.isStateful {
+		buf.WriteString(fmt.Sprintf("-A %v ", cattleNetworkPolicyChainName))
+		if rule.dst != "" {
+			buf.WriteString(fmt.Sprintf("-m set --match-set %v dst ", rule.dst))
+		}
+
+		if rule.src != "" {
+			buf.WriteString(fmt.Sprintf("-m set --match-set %v src ", rule.src))
+		}
+		buf.WriteString(fmt.Sprintf("-m conntrack --ctstate NEW,ESTABLISHED,RELATED "))
+		if rule.action == ActionAllow {
+			ruleTarget = "RETURN"
+		} else {
+			ruleTarget = "DROP"
+		}
+
+		buf.WriteString(fmt.Sprintf("-j %v\n", ruleTarget))
+
+		// Reverse path
+		buf.WriteString(fmt.Sprintf("-A %v ", cattleNetworkPolicyChainName))
+		if rule.dst != "" {
+			buf.WriteString(fmt.Sprintf("-m set --match-set %v dst ", rule.src))
+		}
+
+		if rule.src != "" {
+			buf.WriteString(fmt.Sprintf("-m set --match-set %v src ", rule.dst))
+		}
+		buf.WriteString(fmt.Sprintf("-m conntrack --ctstate ESTABLISHED,RELATED "))
+		if rule.action == ActionAllow {
+			ruleTarget = "RETURN"
+		} else {
+			ruleTarget = "DROP"
+		}
+
+		buf.WriteString(fmt.Sprintf("-j %v\n", ruleTarget))
+
+	} else {
+		buf.WriteString(fmt.Sprintf("-A %v ", cattleNetworkPolicyChainName))
+		if rule.dst != "" {
+			buf.WriteString(fmt.Sprintf("-m set --match-set %v dst ", rule.dst))
+		}
+
+		if rule.src != "" {
+			buf.WriteString(fmt.Sprintf("-m set --match-set %v src ", rule.src))
+		}
+
+		if rule.action == ActionAllow {
+			ruleTarget = "RETURN"
+		} else {
+			ruleTarget = "DROP"
+		}
+
+		buf.WriteString(fmt.Sprintf("-j %v\n", ruleTarget))
+
+	}
 
 	return buf.Bytes()
 }
@@ -225,6 +266,71 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 	return local, all
 }
 
+// This function returns IP addresses of local and all containers of the service
+// on the default network
+func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool, map[string]bool) {
+	local := make(map[string]bool)
+	all := make(map[string]bool)
+	for _, aContainer := range service.Containers {
+		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+			if aContainer.HostUUID == w.selfHost.UUID {
+				local[aContainer.PrimaryIp] = true
+			}
+			all[aContainer.PrimaryIp] = true
+		}
+	}
+
+	return local, all
+}
+
+// This function returns IP addresses of dst and src containers of the linkedTo service
+// on the default network
+func (w *watcher) getInfoFromLinkedServices(
+	linkedTo string, linkedFromMap map[string]*metadata.Service) (
+	map[string]bool, map[string]bool) {
+	logrus.Debugf("getInfoFromLinkedServices")
+
+	var dst, src map[string]bool
+	//src := make(map[string]bool)
+
+	linkedToService, ok := w.servicesMapByName[linkedTo]
+	if !ok {
+		logrus.Errorf("error finding service by name: %v", linkedTo)
+		return nil, nil
+	}
+	linkedToLocal, linkedToAll := w.getInfoFromService(*linkedToService)
+	logrus.Debugf("linkedToLocal: %v", linkedToLocal)
+	logrus.Debugf("linkedToAll: %v", linkedToAll)
+
+	linkedFromAll := make(map[string]bool)
+	for _, aLinkedFromService := range linkedFromMap {
+		fromLocal, fromAll := w.getInfoFromService(*aLinkedFromService)
+		logrus.Debugf("fromLocal: %v", fromLocal)
+		logrus.Debugf("fromAll: %v", fromAll)
+
+		if len(linkedToLocal) > 0 {
+			for k, v := range fromAll {
+				linkedFromAll[k] = v
+			}
+		} else {
+			if len(fromLocal) > 0 {
+				for k, v := range fromLocal {
+					linkedFromAll[k] = v
+				}
+			}
+		}
+	}
+
+	if len(linkedFromAll) > 0 {
+		dst = linkedToAll
+		src = linkedFromAll
+	}
+
+	logrus.Debugf("dst: %v", dst)
+	logrus.Debugf("src: %v", src)
+	return dst, src
+}
+
 func (w *watcher) generateHash(s string) (string, error) {
 	hash, err := hashstructure.Hash(s, nil)
 	if err != nil {
@@ -256,9 +362,10 @@ func (w *watcher) defaultPolicyAction(action string) (map[string]Rule, error) {
 
 	ruleName := "all.local.containers"
 	all := w.getAllLocalContainers()
+	isStateful := false
 	isDstSystem := false
 	isSrcSystem := false
-	r, err := w.buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem, ruleName, all, nil)
+	r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, all, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -279,9 +386,10 @@ func (w *watcher) defaultSystemStackPolicies() (map[string]Rule, error) {
 		_, all := w.getInfoFromStack(stack)
 
 		ruleName := fmt.Sprintf("from.system.stack.%v", stack.Name)
+		isStateful := false
 		isDstSystem := true
 		isSrcSystem := true
-		r, err := w.buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem, ruleName, nil, all)
+		r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, nil, all)
 		if err != nil {
 			return nil, err
 		}
@@ -295,38 +403,39 @@ func (w *watcher) defaultSystemStackPolicies() (map[string]Rule, error) {
 
 func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, error) {
 	logrus.Debugf("withinStackHandler")
-	withinRulesMap := make(map[string]Rule)
+	withinStackRulesMap := make(map[string]Rule)
 	for _, stack := range w.stacks {
 		if stack.System {
 			continue
 		}
 		local, all := w.getInfoFromStack(stack)
-		ruleName := fmt.Sprintf("within.%v", stack.Name)
+		ruleName := fmt.Sprintf("within.stack.%v", stack.Name)
 		if len(local) > 0 {
+			isStateful := false
 			isDstSystem := false
 			isSrcSystem := false
 			if stack.System {
 				isDstSystem = true
 				isSrcSystem = true
 			}
-			r, err := w.buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem, ruleName, local, all)
+			r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, local, all)
 			if err != nil {
 				return nil, err
 			}
 			r.action = p.Action
 
-			withinRulesMap[ruleName] = *r
+			withinStackRulesMap[ruleName] = *r
 		} else {
 			logrus.Debugf("stack: %v doesn't have any local containers, skipping", stack.Name)
 			continue
 		}
 	}
 
-	logrus.Debugf("withinRulesMap: %v", withinRulesMap)
-	return withinRulesMap, nil
+	logrus.Debugf("withinStackRulesMap: %v", withinStackRulesMap)
+	return withinStackRulesMap, nil
 }
 
-func (w *watcher) buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem bool, ruleName string, local, all map[string]bool) (*Rule, error) {
+func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem bool, ruleName string, local, all map[string]bool) (*Rule, error) {
 	var err error
 	var dstSetName, srcSetName string
 
@@ -388,7 +497,8 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem bool, r
 	logrus.Debugf("dstSetName: %v srcSetName: %v", dstSetName, srcSetName)
 
 	r := &Rule{dst: dstSetName,
-		src: srcSetName,
+		src:        srcSetName,
+		isStateful: isStateful,
 	}
 
 	return r, nil
@@ -396,24 +506,97 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem bool, r
 
 func (w *watcher) withinServiceHandler(p NetworkPolicyRule) (map[string]Rule, error) {
 	logrus.Debugf("withinServiceHandler")
+	withinServiceRulesMap := make(map[string]Rule)
+	for _, service := range w.services {
+		if service.System {
+			continue
+		}
+		local, all := w.getInfoFromService(service)
+		ruleName := fmt.Sprintf("within.service.%v.%v", service.StackName, service.Name)
+		if len(local) > 0 {
+			isStateful := false
+			isDstSystem := false
+			isSrcSystem := false
+			r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, local, all)
+			if err != nil {
+				return nil, err
+			}
+			r.action = p.Action
 
-	return nil, nil
+			withinServiceRulesMap[ruleName] = *r
+		} else {
+			logrus.Debugf("service: %v doesn't have any local containers, skipping", service.Name)
+			continue
+		}
+	}
+
+	logrus.Debugf("withinServiceRulesMap: %v", withinServiceRulesMap)
+	return withinServiceRulesMap, nil
 }
 
-func (w *watcher) withinLinkHandler(p NetworkPolicyRule) (map[string]Rule, error) {
-	logrus.Debugf("withinLinkHandler")
+func (w *watcher) withinLinkedHandler(p NetworkPolicyRule) (map[string]Rule, error) {
+	logrus.Debugf("withinLinkedHandler")
+	withinLinkedRulesMap := make(map[string]Rule)
 
-	return nil, nil
+	linkedMappings := buildLinkedMappings(w.services)
+
+	for linkedTo, linkedFromMap := range linkedMappings {
+		logrus.Debugf("linkedTo: %v, linkedFromMap: %v", linkedTo, linkedFromMap)
+
+		local, all := w.getInfoFromLinkedServices(linkedTo, linkedFromMap)
+		ruleName := fmt.Sprintf("within.linked.%v", linkedTo)
+		if len(local) > 0 {
+			isStateful := true
+			isDstSystem := false
+			isSrcSystem := false
+			r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, local, all)
+			if err != nil {
+				return nil, err
+			}
+			r.action = p.Action
+
+			withinLinkedRulesMap[ruleName] = *r
+		} else {
+			logrus.Debugf("linked service: %v doesn't have any local containers, skipping", linkedTo)
+			continue
+		}
+	}
+
+	logrus.Debugf("withinLinkedRulesMap: %v", withinLinkedRulesMap)
+	return withinLinkedRulesMap, nil
+}
+
+func buildLinkedMappings(services []metadata.Service) map[string]map[string]*metadata.Service {
+	logrus.Debugf("buildLinkedMappings")
+
+	linkedServicesMap := make(map[string]map[string]*metadata.Service)
+
+	for index, service := range services {
+		if service.System || len(service.Links) == 0 {
+			continue
+		}
+		//logrus.Debugf("service: %v", service)
+		logrus.Debugf("service.Links: %v", service.Links)
+		for linkedService := range service.Links {
+			if _, found := linkedServicesMap[linkedService]; !found {
+				linkedServicesMap[linkedService] = make(map[string]*metadata.Service)
+			}
+			linkedServicesMap[linkedService][service.UUID] = &services[index]
+		}
+	}
+
+	logrus.Debugf("linkedServicesMap: %v", linkedServicesMap)
+	return linkedServicesMap
 }
 
 func (w *watcher) withinPolicyHandler(p NetworkPolicyRule) (map[string]Rule, error) {
-	logrus.Debugf("withinPolicyHandler")
+	logrus.Debugf("withinPolicyHandler: %v", p)
 	if p.Within == StrStack {
 		return w.withinStackHandler(p)
 	} else if p.Within == StrService {
 		return w.withinServiceHandler(p)
 	} else if p.Within == StrLinked {
-		w.withinLinkHandler(p)
+		return w.withinLinkedHandler(p)
 	}
 
 	return nil, fmt.Errorf("invalid option for within")
@@ -430,9 +613,10 @@ func (w *watcher) groupByHandler(p NetworkPolicyRule) (map[string]Rule, error) {
 
 		ruleName := fmt.Sprintf("between.%v.%v", p.Between.GroupBy, labelValue)
 		if len(local) > 0 {
+			isStateful := false
 			isDstSystem := false
 			isSrcSystem := false
-			r, err := w.buildAndProcessRuleWithSrcDst(isDstSystem, isSrcSystem, ruleName, local, all)
+			r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, local, all)
 			if err != nil {
 				return nil, err
 			}
@@ -542,6 +726,12 @@ func (w *watcher) fetchInfoFromMetadata() error {
 		return err
 	}
 
+	services, err := w.c.GetServices()
+	if err != nil {
+		logrus.Errorf("Error getting services from metadata: %v", err)
+		return err
+	}
+
 	containers, err := w.c.GetContainers()
 	if err != nil {
 		logrus.Errorf("Error getting containers from metadata: %v", err)
@@ -550,7 +740,7 @@ func (w *watcher) fetchInfoFromMetadata() error {
 
 	selfHost, err := w.c.GetSelfHost()
 	if err != nil {
-		logrus.Errorf("Couldn't get containers from metadata: %v", err)
+		logrus.Errorf("Couldn't get self host from metadata: %v", err)
 		return err
 	}
 
@@ -568,11 +758,24 @@ func (w *watcher) fetchInfoFromMetadata() error {
 	}
 	logrus.Debugf("defaultSubnet: %#v", defaultSubnet)
 
+	servicesMapByName := make(map[string]*metadata.Service)
+	for _, aStack := range stacks {
+		if aStack.System {
+			continue
+		}
+		for index, aService := range aStack.Services {
+			key := aStack.Name + "/" + aService.Name
+			servicesMapByName[key] = &aStack.Services[index]
+		}
+	}
+
 	w.defaultNetwork = defaultNetwork
 	w.defaultSubnet = defaultSubnet
 	w.selfHost = &selfHost
 	w.stacks = stacks
+	w.services = services
 	w.containers = containers
+	w.servicesMapByName = servicesMapByName
 
 	return nil
 }
@@ -705,6 +908,9 @@ func (w *watcher) cleanupIpsets() error {
 
 		if staleIPSets != nil && len(staleIPSets) > 0 {
 			for _, ipset := range staleIPSets {
+				if ipset == "" {
+					continue
+				}
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", ipset)
 				err := executeCommand(deleteCmdStr)
 				if err != nil {
@@ -789,14 +995,17 @@ func (w *watcher) deleteBaseRules() error {
 }
 
 func (w *watcher) flushAndDeleteChain() error {
-	if err := w.run("iptables", "-w", "-F", cattleNetworkPolicyChainName); err != nil {
-		logrus.Errorf("Error flushing the chain: %v", cattleNetworkPolicyChainName)
-		return err
-	}
+	checkRule := fmt.Sprintf("iptables -w -L %v", cattleNetworkPolicyChainName)
+	if executeCommandNoStderr(checkRule) == nil {
+		if err := w.run("iptables", "-w", "-F", cattleNetworkPolicyChainName); err != nil {
+			logrus.Errorf("Error flushing the chain: %v", cattleNetworkPolicyChainName)
+			return err
+		}
 
-	if err := w.run("iptables", "-X", cattleNetworkPolicyChainName); err != nil {
-		logrus.Errorf("Error deleting the chain: %v", cattleNetworkPolicyChainName)
-		return err
+		if err := w.run("iptables", "-X", cattleNetworkPolicyChainName); err != nil {
+			logrus.Errorf("Error deleting the chain: %v", cattleNetworkPolicyChainName)
+			return err
+		}
 	}
 
 	return nil
@@ -819,6 +1028,7 @@ func (w *watcher) cleanup() error {
 	// remove the ipsets
 	if err := w.cleanupIpsets(); err != nil {
 		logrus.Errorf("Error cleaning ipsets: %v", err)
+		return err
 	}
 
 	return nil
