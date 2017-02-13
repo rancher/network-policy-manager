@@ -29,6 +29,7 @@ const (
 type watcher struct {
 	c                  metadata.Client
 	lastApplied        time.Time
+	doCleanup          bool
 	shutdownInProgress bool
 	signalCh           chan os.Signal
 	exitCh             chan int
@@ -129,7 +130,7 @@ func (rule *Rule) iptables(defaultPolicyAction string) []byte {
 }
 
 // Watch is used to monitor metadata for changes
-func Watch(c metadata.Client, exitCh chan int) error {
+func Watch(c metadata.Client, exitCh chan int, doCleanup bool) error {
 	err := setupKernelParameters()
 	if err != nil {
 		logrus.Errorf("Error setting up needed kernel parameters: %v", err)
@@ -142,6 +143,7 @@ func Watch(c metadata.Client, exitCh chan int) error {
 	w := &watcher{
 		c:                  c,
 		shutdownInProgress: false,
+		doCleanup:          doCleanup,
 		exitCh:             exitCh,
 		signalCh:           sCh,
 	}
@@ -158,7 +160,9 @@ func (w *watcher) shutdown() {
 	w.shutdownInProgress = true
 
 	// This is probably a good place to add clean up logic
-	w.cleanup()
+	if w.doCleanup {
+		w.cleanup()
+	}
 
 	w.exitCh <- 0
 }
