@@ -29,6 +29,7 @@ const (
 type watcher struct {
 	c                  metadata.Client
 	lastApplied        time.Time
+	doCleanup          bool
 	shutdownInProgress bool
 	signalCh           chan os.Signal
 	exitCh             chan int
@@ -129,7 +130,7 @@ func (rule *Rule) iptables(defaultPolicyAction string) []byte {
 }
 
 // Watch is used to monitor metadata for changes
-func Watch(c metadata.Client, exitCh chan int) error {
+func Watch(c metadata.Client, exitCh chan int, doCleanup bool) error {
 	err := setupKernelParameters()
 	if err != nil {
 		logrus.Errorf("Error setting up needed kernel parameters: %v", err)
@@ -142,6 +143,7 @@ func Watch(c metadata.Client, exitCh chan int) error {
 	w := &watcher{
 		c:                  c,
 		shutdownInProgress: false,
+		doCleanup:          doCleanup,
 		exitCh:             exitCh,
 		signalCh:           sCh,
 	}
@@ -158,7 +160,9 @@ func (w *watcher) shutdown() {
 	w.shutdownInProgress = true
 
 	// This is probably a good place to add clean up logic
-	w.cleanup()
+	if w.doCleanup {
+		w.cleanup()
+	}
 
 	w.exitCh <- 0
 }
@@ -267,16 +271,43 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 }
 
 // This function returns IP addresses of local and all containers of the service
-// on the default network
+// on the default network.
+// Any sidekick service is also considered part of the same service.
 func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool, map[string]bool) {
 	local := make(map[string]bool)
 	all := make(map[string]bool)
+
+	// This means it's a sidekick service, it will handled as part of the
+	// primary service, so skipping here.
+	if service.Name != service.PrimaryServiceName {
+		return local, all
+	}
+
 	for _, aContainer := range service.Containers {
 		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 			if aContainer.HostUUID == w.selfHost.UUID {
 				local[aContainer.PrimaryIp] = true
 			}
 			all[aContainer.PrimaryIp] = true
+		}
+	}
+
+	for _, aSKServiceName := range service.Sidekicks {
+		logrus.Errorf("aSKServiceName: %v", aSKServiceName)
+		fullSKServiceName := service.StackName + "/" + aSKServiceName
+		sidekickService, found := w.servicesMapByName[fullSKServiceName]
+		if !found {
+			logrus.Errorf("unable to find sidekick service: %v", fullSKServiceName)
+			continue
+		}
+
+		for _, aContainer := range sidekickService.Containers {
+			if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+				if aContainer.HostUUID == w.selfHost.UUID {
+					local[aContainer.PrimaryIp] = true
+				}
+				all[aContainer.PrimaryIp] = true
+			}
 		}
 	}
 

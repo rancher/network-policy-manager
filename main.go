@@ -26,6 +26,10 @@ func main() {
 			Name:  "debug",
 			Usage: "Turn on debug logging",
 		},
+		cli.BoolFlag{
+			Name:  "cleanup",
+			Usage: "Cleanup everything related to policy when service is stoppped",
+		},
 	}
 	app.Action = run
 	app.Run(os.Args)
@@ -43,7 +47,7 @@ func run(c *cli.Context) error {
 	}
 
 	exitCh := make(chan int)
-	if err := policy.Watch(mClient, exitCh); err != nil {
+	if err := policy.Watch(mClient, exitCh, c.Bool("cleanup")); err != nil {
 		logrus.Errorf("Failed to start policy-manger: %v", err)
 	}
 
