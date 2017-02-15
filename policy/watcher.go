@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/hashicorp/go-multierror"
 	"github.com/mitchellh/hashstructure"
 	"github.com/pkg/errors"
 	"github.com/rancher/go-rancher-metadata/metadata"
@@ -293,7 +294,7 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 	}
 
 	for _, aSKServiceName := range service.Sidekicks {
-		logrus.Errorf("aSKServiceName: %v", aSKServiceName)
+		logrus.Debugf("aSKServiceName: %v", aSKServiceName)
 		fullSKServiceName := service.StackName + "/" + aSKServiceName
 		sidekickService, found := w.servicesMapByName[fullSKServiceName]
 		if !found {
@@ -891,38 +892,56 @@ func (w *watcher) printIpsetsMapping() {
 func (w *watcher) refreshIpsets() error {
 	logrus.Debugf("refreshing ipsets")
 
+	var result error
 	for ipsetName, ipset := range w.ipsets {
 		oldipset := w.appliedIPsets[ipsetName]
 		if !reflect.DeepEqual(ipset, oldipset) {
 			logrus.Debugf("refreshing ipset: %v", ipsetName)
 			tmpIPSetName := "TMP-" + ipsetName
-			createIPSet(tmpIPSetName, ipset)
+			if err := createIPSet(tmpIPSetName, ipset); err != nil {
+				logrus.Errorf("error creating ipset: %v", err)
+				result = multierror.Append(result, err)
+				continue
+			}
 			if existsIPSet(ipsetName) {
 				swapCmdStr := fmt.Sprintf("ipset swap %s %s", tmpIPSetName, ipsetName)
-				executeCommand(swapCmdStr)
+				if err := executeCommand(swapCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", swapCmdStr, err)
+					result = multierror.Append(result, err)
+				}
 
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", tmpIPSetName)
-				executeCommand(deleteCmdStr)
+				if err := executeCommand(deleteCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					result = multierror.Append(result, err)
+				}
 			} else {
 				renameCmdStr := fmt.Sprintf("ipset rename %s %s", tmpIPSetName, ipsetName)
-				executeCommand(renameCmdStr)
+				if err := executeCommand(renameCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", renameCmdStr, err)
+					result = multierror.Append(result, err)
+				}
 			}
 
 		}
 	}
 
-	return nil
+	return result
 }
 
 func (w *watcher) cleanupIpsets() error {
 	logrus.Debugf("ipsets cleanup")
 
+	var result error
 	for ipsetName := range w.appliedIPsets {
 		_, existsInNew := w.appliedIPsets[ipsetName]
 		if !existsInNew {
 			logrus.Debugf("ipset: %v doesn't exist in new map, hence deleting ", ipsetName)
 			deleteCmdStr := fmt.Sprintf("ipset destroy %s", ipsetName)
-			executeCommand(deleteCmdStr)
+			if err := executeCommand(deleteCmdStr); err != nil {
+				logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+				result = multierror.Append(result, err)
+			}
 		}
 	}
 
@@ -943,16 +962,15 @@ func (w *watcher) cleanupIpsets() error {
 					continue
 				}
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", ipset)
-				err := executeCommand(deleteCmdStr)
-				if err != nil {
-					logrus.Errorf("error while running cmd=%v :%v", deleteCmdStr, err)
-					return err
+				if err := executeCommand(deleteCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					result = multierror.Append(result, err)
 				}
 			}
 		}
 	}
 
-	return nil
+	return result
 }
 
 func (w *watcher) applyIptablesRules(rulesMap map[int]map[string]Rule) error {
@@ -1067,17 +1085,24 @@ func (w *watcher) cleanup() error {
 
 func existsIPSet(name string) bool {
 	checkCmdStr := fmt.Sprintf("ipset list %s -name", name)
-	err := executeCommandNoStderr(checkCmdStr)
+	err := executeCommandNoStdoutNoStderr(checkCmdStr)
 
 	return err == nil
 }
 
-func createIPSet(name string, ips map[string]bool) {
+func createIPSet(name string, ips map[string]bool) error {
+	var result error
 	createStr := fmt.Sprintf("ipset create %s iphash", name)
-	executeCommand(createStr)
+	if err := executeCommand(createStr); err != nil {
+		return err
+	}
 
 	for ip := range ips {
 		addIPStr := fmt.Sprintf("ipset add %s %s", name, ip)
-		executeCommand(addIPStr)
+		if err := executeCommand(addIPStr); err != nil {
+			result = multierror.Append(result, err)
+		}
 	}
+
+	return result
 }
