@@ -283,12 +283,14 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 // on the default network.
 // Any sidekick service is also considered part of the same service.
 func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool, map[string]bool) {
+	logrus.Debugf("getInfoFromService service: %v", service)
 	local := make(map[string]bool)
 	all := make(map[string]bool)
 
 	// This means it's a sidekick service, it will handled as part of the
 	// primary service, so skipping here.
 	if service.Name != service.PrimaryServiceName {
+		logrus.Debugf("service: %v is sidekick, skipping", service.Name)
 		return local, all
 	}
 
@@ -306,8 +308,9 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 	}
 
 	for _, aSKServiceName := range service.Sidekicks {
-		logrus.Debugf("aSKServiceName: %v", aSKServiceName)
-		fullSKServiceName := service.StackName + "/" + aSKServiceName
+		aSKServiceNameLowerCase := strings.ToLower(aSKServiceName)
+		logrus.Debugf("aSKServiceNameLowerCase: %v", aSKServiceNameLowerCase)
+		fullSKServiceName := service.StackName + "/" + aSKServiceNameLowerCase
 		sidekickService, found := w.servicesMapByName[fullSKServiceName]
 		if !found {
 			logrus.Errorf("unable to find sidekick service: %v", fullSKServiceName)
@@ -628,10 +631,12 @@ func buildLinkedMappings(services []metadata.Service) map[string]map[string]*met
 		//logrus.Debugf("service: %v", service)
 		logrus.Debugf("service.Links: %v", service.Links)
 		for linkedService := range service.Links {
-			if _, found := linkedServicesMap[linkedService]; !found {
-				linkedServicesMap[linkedService] = make(map[string]*metadata.Service)
+			linkedServiceLowerCase := strings.ToLower(linkedService)
+			if _, found := linkedServicesMap[linkedServiceLowerCase]; !found {
+				linkedServicesMap[linkedServiceLowerCase] = make(map[string]*metadata.Service)
 			}
-			linkedServicesMap[linkedService][service.UUID] = &services[index]
+			sKey := service.StackName + "/" + service.Name
+			linkedServicesMap[linkedServiceLowerCase][sKey] = &services[index]
 		}
 	}
 
@@ -818,6 +823,7 @@ func (w *watcher) fetchInfoFromMetadata() error {
 			servicesMapByName[key] = &aStack.Services[index]
 		}
 	}
+	logrus.Debugf("servicesMapByName: %v", servicesMapByName)
 
 	w.defaultNetwork = defaultNetwork
 	w.defaultSubnet = defaultSubnet
