@@ -469,67 +469,67 @@ func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, erro
 
 func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem bool, ruleName string, local, all map[string]bool) (*Rule, error) {
 	var err error
-	var dstSetName, srcSetName string
+	var srcSetName, dstSetName, hashedDstSetName, hashedSrcSetName string
 
 	if local != nil {
-		dstSet := fmt.Sprintf("dst.%v", ruleName)
-		dstSetName, err = w.generateHash(dstSet)
+		dstSetName = fmt.Sprintf("dst.%v", ruleName)
+		hashedDstSetName, err = w.generateHash(dstSetName)
 		if err != nil {
 			logrus.Errorf("coudln't generate hash: %v", err)
 			return nil, err
 		}
 
 		if isDstSystem {
-			dstSetName = "RNCH-S-" + dstSetName
+			hashedDstSetName = "RNCH-S-" + hashedDstSetName
 		} else {
-			dstSetName = "RNCH-U-" + dstSetName
+			hashedDstSetName = "RNCH-U-" + hashedDstSetName
 		}
 
-		if len(dstSetName) > ipsetNameMaxLength {
-			logrus.Errorf("length of ipset names exceeded %v. dstSetName: %v", ipsetNameMaxLength, dstSetName)
-			dstSetName = dstSetName[0 : ipsetNameMaxLength-1]
+		if len(hashedDstSetName) > ipsetNameMaxLength {
+			logrus.Errorf("length of ipset names exceeded %v. hashedDstSetName: %v", ipsetNameMaxLength, hashedDstSetName)
+			hashedDstSetName = hashedDstSetName[0 : ipsetNameMaxLength-1]
 		}
-		if existingSet, exists := w.ipsets[dstSetName]; exists {
+		if existingSet, exists := w.ipsets[hashedDstSetName]; exists {
 			if !reflect.DeepEqual(existingSet, local) {
-				return nil, fmt.Errorf("%v: mismatch existingSet: %v local:%v", dstSetName, existingSet, local)
+				return nil, fmt.Errorf("%v: mismatch existingSet: %v local:%v", hashedDstSetName, existingSet, local)
 			}
 		} else {
-			w.ipsets[dstSetName] = local
-			w.ipsetsNamesMap[dstSetName] = dstSet
+			w.ipsets[hashedDstSetName] = local
+			w.ipsetsNamesMap[hashedDstSetName] = dstSetName
 		}
 	}
 
 	if all != nil {
 
-		srcSet := fmt.Sprintf("src.%v", ruleName)
-		srcSetName, err = w.generateHash(srcSet)
+		srcSetName = fmt.Sprintf("src.%v", ruleName)
+		hashedSrcSetName, err = w.generateHash(srcSetName)
 		if err != nil {
 			logrus.Errorf("coudln't generate hash: %v", err)
 			return nil, err
 		}
 		if isSrcSystem {
-			srcSetName = "RNCH-S-" + srcSetName
+			hashedSrcSetName = "RNCH-S-" + hashedSrcSetName
 		} else {
-			srcSetName = "RNCH-U-" + srcSetName
+			hashedSrcSetName = "RNCH-U-" + hashedSrcSetName
 		}
-		if len(srcSetName) > ipsetNameMaxLength {
-			logrus.Errorf("length of ipset names exceeded %v. srcSetName: %v", ipsetNameMaxLength, srcSetName)
-			srcSetName = srcSetName[0 : ipsetNameMaxLength-1]
+		if len(hashedSrcSetName) > ipsetNameMaxLength {
+			logrus.Errorf("length of ipset names exceeded %v. hashedSrcSetName: %v", ipsetNameMaxLength, hashedSrcSetName)
+			hashedSrcSetName = hashedSrcSetName[0 : ipsetNameMaxLength-1]
 		}
-		if existingSet, exists := w.ipsets[srcSetName]; exists {
+		if existingSet, exists := w.ipsets[hashedSrcSetName]; exists {
 			if !reflect.DeepEqual(existingSet, all) {
-				logrus.Errorf("%v: mismatch existingSet: %v all:%v", srcSetName, existingSet, all)
+				logrus.Errorf("%v: mismatch existingSet: %v all:%v", hashedSrcSetName, existingSet, all)
 			}
 		} else {
-			w.ipsets[srcSetName] = all
-			w.ipsetsNamesMap[srcSetName] = srcSet
+			w.ipsets[hashedSrcSetName] = all
+			w.ipsetsNamesMap[hashedSrcSetName] = srcSetName
 		}
 	}
 
-	logrus.Debugf("dstSetName: %v srcSetName: %v", dstSetName, srcSetName)
+	logrus.Debugf("dst: %v (%v) src: %v (%v)", hashedDstSetName, dstSetName, hashedSrcSetName, srcSetName)
 
-	r := &Rule{dst: dstSetName,
-		src:        srcSetName,
+	r := &Rule{dst: hashedDstSetName,
+		src:        hashedSrcSetName,
 		isStateful: isStateful,
 	}
 
