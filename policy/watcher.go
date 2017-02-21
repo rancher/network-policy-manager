@@ -916,6 +916,13 @@ func (w *watcher) refreshIpsets() error {
 		if !reflect.DeepEqual(ipset, oldipset) {
 			logrus.Debugf("refreshing ipset: %v", ipsetName)
 			tmpIPSetName := "TMP-" + ipsetName
+			if existsIPSet(tmpIPSetName) {
+				deleteCmdStr := fmt.Sprintf("ipset destroy %s", tmpIPSetName)
+				if err := executeCommand(deleteCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					result = multierror.Append(result, err)
+				}
+			}
 			if err := createIPSet(tmpIPSetName, ipset); err != nil {
 				logrus.Errorf("error creating ipset: %v", err)
 				result = multierror.Append(result, err)
