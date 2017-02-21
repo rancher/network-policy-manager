@@ -241,9 +241,13 @@ func (w *watcher) getContainersGroupedBy(label string) map[string]map[string]map
 				}
 
 				if aContainer.HostUUID == w.selfHost.UUID {
-					aLabelValueMap["local"][aContainer.PrimaryIp] = true
+					if aContainer.PrimaryIp != "" {
+						aLabelValueMap["local"][aContainer.PrimaryIp] = true
+					}
 				}
-				aLabelValueMap["all"][aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					aLabelValueMap["all"][aContainer.PrimaryIp] = true
+				}
 			}
 		}
 	}
@@ -261,9 +265,13 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 		for _, aContainer := range aService.Containers {
 			if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 				if aContainer.HostUUID == w.selfHost.UUID {
-					local[aContainer.PrimaryIp] = true
+					if aContainer.PrimaryIp != "" {
+						local[aContainer.PrimaryIp] = true
+					}
 				}
-				all[aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					all[aContainer.PrimaryIp] = true
+				}
 			}
 		}
 	}
@@ -287,9 +295,13 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 	for _, aContainer := range service.Containers {
 		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 			if aContainer.HostUUID == w.selfHost.UUID {
-				local[aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					local[aContainer.PrimaryIp] = true
+				}
 			}
-			all[aContainer.PrimaryIp] = true
+			if aContainer.PrimaryIp != "" {
+				all[aContainer.PrimaryIp] = true
+			}
 		}
 	}
 
@@ -305,9 +317,13 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 		for _, aContainer := range sidekickService.Containers {
 			if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 				if aContainer.HostUUID == w.selfHost.UUID {
-					local[aContainer.PrimaryIp] = true
+					if aContainer.PrimaryIp != "" {
+						local[aContainer.PrimaryIp] = true
+					}
 				}
-				all[aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					all[aContainer.PrimaryIp] = true
+				}
 			}
 		}
 	}
@@ -380,7 +396,9 @@ func (w *watcher) getAllLocalContainers() map[string]bool {
 		}
 		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 			if aContainer.HostUUID == w.selfHost.UUID {
-				all[aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					all[aContainer.PrimaryIp] = true
+				}
 			}
 		}
 	}
