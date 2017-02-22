@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/hashicorp/go-multierror"
 	"github.com/mitchellh/hashstructure"
 	"github.com/pkg/errors"
 	"github.com/rancher/go-rancher-metadata/metadata"
@@ -240,9 +241,13 @@ func (w *watcher) getContainersGroupedBy(label string) map[string]map[string]map
 				}
 
 				if aContainer.HostUUID == w.selfHost.UUID {
-					aLabelValueMap["local"][aContainer.PrimaryIp] = true
+					if aContainer.PrimaryIp != "" {
+						aLabelValueMap["local"][aContainer.PrimaryIp] = true
+					}
 				}
-				aLabelValueMap["all"][aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					aLabelValueMap["all"][aContainer.PrimaryIp] = true
+				}
 			}
 		}
 	}
@@ -260,9 +265,13 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 		for _, aContainer := range aService.Containers {
 			if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 				if aContainer.HostUUID == w.selfHost.UUID {
-					local[aContainer.PrimaryIp] = true
+					if aContainer.PrimaryIp != "" {
+						local[aContainer.PrimaryIp] = true
+					}
 				}
-				all[aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					all[aContainer.PrimaryIp] = true
+				}
 			}
 		}
 	}
@@ -274,27 +283,34 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 // on the default network.
 // Any sidekick service is also considered part of the same service.
 func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool, map[string]bool) {
+	logrus.Debugf("getInfoFromService service: %v", service)
 	local := make(map[string]bool)
 	all := make(map[string]bool)
 
 	// This means it's a sidekick service, it will handled as part of the
 	// primary service, so skipping here.
 	if service.Name != service.PrimaryServiceName {
+		logrus.Debugf("service: %v is sidekick, skipping", service.Name)
 		return local, all
 	}
 
 	for _, aContainer := range service.Containers {
 		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 			if aContainer.HostUUID == w.selfHost.UUID {
-				local[aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					local[aContainer.PrimaryIp] = true
+				}
 			}
-			all[aContainer.PrimaryIp] = true
+			if aContainer.PrimaryIp != "" {
+				all[aContainer.PrimaryIp] = true
+			}
 		}
 	}
 
 	for _, aSKServiceName := range service.Sidekicks {
-		logrus.Errorf("aSKServiceName: %v", aSKServiceName)
-		fullSKServiceName := service.StackName + "/" + aSKServiceName
+		aSKServiceNameLowerCase := strings.ToLower(aSKServiceName)
+		logrus.Debugf("aSKServiceNameLowerCase: %v", aSKServiceNameLowerCase)
+		fullSKServiceName := service.StackName + "/" + aSKServiceNameLowerCase
 		sidekickService, found := w.servicesMapByName[fullSKServiceName]
 		if !found {
 			logrus.Errorf("unable to find sidekick service: %v", fullSKServiceName)
@@ -304,9 +320,13 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 		for _, aContainer := range sidekickService.Containers {
 			if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 				if aContainer.HostUUID == w.selfHost.UUID {
-					local[aContainer.PrimaryIp] = true
+					if aContainer.PrimaryIp != "" {
+						local[aContainer.PrimaryIp] = true
+					}
 				}
-				all[aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					all[aContainer.PrimaryIp] = true
+				}
 			}
 		}
 	}
@@ -379,7 +399,9 @@ func (w *watcher) getAllLocalContainers() map[string]bool {
 		}
 		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
 			if aContainer.HostUUID == w.selfHost.UUID {
-				all[aContainer.PrimaryIp] = true
+				if aContainer.PrimaryIp != "" {
+					all[aContainer.PrimaryIp] = true
+				}
 			}
 		}
 	}
@@ -468,67 +490,67 @@ func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, erro
 
 func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem bool, ruleName string, local, all map[string]bool) (*Rule, error) {
 	var err error
-	var dstSetName, srcSetName string
+	var srcSetName, dstSetName, hashedDstSetName, hashedSrcSetName string
 
 	if local != nil {
-		dstSet := fmt.Sprintf("dst.%v", ruleName)
-		dstSetName, err = w.generateHash(dstSet)
+		dstSetName = fmt.Sprintf("dst.%v", ruleName)
+		hashedDstSetName, err = w.generateHash(dstSetName)
 		if err != nil {
 			logrus.Errorf("coudln't generate hash: %v", err)
 			return nil, err
 		}
 
 		if isDstSystem {
-			dstSetName = "RNCH-S-" + dstSetName
+			hashedDstSetName = "RNCH-S-" + hashedDstSetName
 		} else {
-			dstSetName = "RNCH-U-" + dstSetName
+			hashedDstSetName = "RNCH-U-" + hashedDstSetName
 		}
 
-		if len(dstSetName) > ipsetNameMaxLength {
-			logrus.Errorf("length of ipset names exceeded %v. dstSetName: %v", ipsetNameMaxLength, dstSetName)
-			dstSetName = dstSetName[0 : ipsetNameMaxLength-1]
+		if len(hashedDstSetName) > ipsetNameMaxLength {
+			logrus.Errorf("length of ipset names exceeded %v. hashedDstSetName: %v", ipsetNameMaxLength, hashedDstSetName)
+			hashedDstSetName = hashedDstSetName[0 : ipsetNameMaxLength-1]
 		}
-		if existingSet, exists := w.ipsets[dstSetName]; exists {
+		if existingSet, exists := w.ipsets[hashedDstSetName]; exists {
 			if !reflect.DeepEqual(existingSet, local) {
-				return nil, fmt.Errorf("%v: mismatch existingSet: %v local:%v", dstSetName, existingSet, local)
+				return nil, fmt.Errorf("%v: mismatch existingSet: %v local:%v", hashedDstSetName, existingSet, local)
 			}
 		} else {
-			w.ipsets[dstSetName] = local
-			w.ipsetsNamesMap[dstSetName] = dstSet
+			w.ipsets[hashedDstSetName] = local
+			w.ipsetsNamesMap[hashedDstSetName] = dstSetName
 		}
 	}
 
 	if all != nil {
 
-		srcSet := fmt.Sprintf("src.%v", ruleName)
-		srcSetName, err = w.generateHash(srcSet)
+		srcSetName = fmt.Sprintf("src.%v", ruleName)
+		hashedSrcSetName, err = w.generateHash(srcSetName)
 		if err != nil {
 			logrus.Errorf("coudln't generate hash: %v", err)
 			return nil, err
 		}
 		if isSrcSystem {
-			srcSetName = "RNCH-S-" + srcSetName
+			hashedSrcSetName = "RNCH-S-" + hashedSrcSetName
 		} else {
-			srcSetName = "RNCH-U-" + srcSetName
+			hashedSrcSetName = "RNCH-U-" + hashedSrcSetName
 		}
-		if len(srcSetName) > ipsetNameMaxLength {
-			logrus.Errorf("length of ipset names exceeded %v. srcSetName: %v", ipsetNameMaxLength, srcSetName)
-			srcSetName = srcSetName[0 : ipsetNameMaxLength-1]
+		if len(hashedSrcSetName) > ipsetNameMaxLength {
+			logrus.Errorf("length of ipset names exceeded %v. hashedSrcSetName: %v", ipsetNameMaxLength, hashedSrcSetName)
+			hashedSrcSetName = hashedSrcSetName[0 : ipsetNameMaxLength-1]
 		}
-		if existingSet, exists := w.ipsets[srcSetName]; exists {
+		if existingSet, exists := w.ipsets[hashedSrcSetName]; exists {
 			if !reflect.DeepEqual(existingSet, all) {
-				logrus.Errorf("%v: mismatch existingSet: %v all:%v", srcSetName, existingSet, all)
+				logrus.Errorf("%v: mismatch existingSet: %v all:%v", hashedSrcSetName, existingSet, all)
 			}
 		} else {
-			w.ipsets[srcSetName] = all
-			w.ipsetsNamesMap[srcSetName] = srcSet
+			w.ipsets[hashedSrcSetName] = all
+			w.ipsetsNamesMap[hashedSrcSetName] = srcSetName
 		}
 	}
 
-	logrus.Debugf("dstSetName: %v srcSetName: %v", dstSetName, srcSetName)
+	logrus.Debugf("dst: %v (%v) src: %v (%v)", hashedDstSetName, dstSetName, hashedSrcSetName, srcSetName)
 
-	r := &Rule{dst: dstSetName,
-		src:        srcSetName,
+	r := &Rule{dst: hashedDstSetName,
+		src:        hashedSrcSetName,
 		isStateful: isStateful,
 	}
 
@@ -609,10 +631,12 @@ func buildLinkedMappings(services []metadata.Service) map[string]map[string]*met
 		//logrus.Debugf("service: %v", service)
 		logrus.Debugf("service.Links: %v", service.Links)
 		for linkedService := range service.Links {
-			if _, found := linkedServicesMap[linkedService]; !found {
-				linkedServicesMap[linkedService] = make(map[string]*metadata.Service)
+			linkedServiceLowerCase := strings.ToLower(linkedService)
+			if _, found := linkedServicesMap[linkedServiceLowerCase]; !found {
+				linkedServicesMap[linkedServiceLowerCase] = make(map[string]*metadata.Service)
 			}
-			linkedServicesMap[linkedService][service.UUID] = &services[index]
+			sKey := service.StackName + "/" + service.Name
+			linkedServicesMap[linkedServiceLowerCase][sKey] = &services[index]
 		}
 	}
 
@@ -799,6 +823,7 @@ func (w *watcher) fetchInfoFromMetadata() error {
 			servicesMapByName[key] = &aStack.Services[index]
 		}
 	}
+	logrus.Debugf("servicesMapByName: %v", servicesMapByName)
 
 	w.defaultNetwork = defaultNetwork
 	w.defaultSubnet = defaultSubnet
@@ -891,38 +916,63 @@ func (w *watcher) printIpsetsMapping() {
 func (w *watcher) refreshIpsets() error {
 	logrus.Debugf("refreshing ipsets")
 
+	var result error
 	for ipsetName, ipset := range w.ipsets {
 		oldipset := w.appliedIPsets[ipsetName]
 		if !reflect.DeepEqual(ipset, oldipset) {
 			logrus.Debugf("refreshing ipset: %v", ipsetName)
 			tmpIPSetName := "TMP-" + ipsetName
-			createIPSet(tmpIPSetName, ipset)
+			if existsIPSet(tmpIPSetName) {
+				deleteCmdStr := fmt.Sprintf("ipset destroy %s", tmpIPSetName)
+				if err := executeCommand(deleteCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					result = multierror.Append(result, err)
+				}
+			}
+			if err := createIPSet(tmpIPSetName, ipset); err != nil {
+				logrus.Errorf("error creating ipset: %v", err)
+				result = multierror.Append(result, err)
+				continue
+			}
 			if existsIPSet(ipsetName) {
 				swapCmdStr := fmt.Sprintf("ipset swap %s %s", tmpIPSetName, ipsetName)
-				executeCommand(swapCmdStr)
+				if err := executeCommand(swapCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", swapCmdStr, err)
+					result = multierror.Append(result, err)
+				}
 
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", tmpIPSetName)
-				executeCommand(deleteCmdStr)
+				if err := executeCommand(deleteCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					result = multierror.Append(result, err)
+				}
 			} else {
 				renameCmdStr := fmt.Sprintf("ipset rename %s %s", tmpIPSetName, ipsetName)
-				executeCommand(renameCmdStr)
+				if err := executeCommand(renameCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", renameCmdStr, err)
+					result = multierror.Append(result, err)
+				}
 			}
 
 		}
 	}
 
-	return nil
+	return result
 }
 
 func (w *watcher) cleanupIpsets() error {
 	logrus.Debugf("ipsets cleanup")
 
+	var result error
 	for ipsetName := range w.appliedIPsets {
 		_, existsInNew := w.appliedIPsets[ipsetName]
 		if !existsInNew {
 			logrus.Debugf("ipset: %v doesn't exist in new map, hence deleting ", ipsetName)
 			deleteCmdStr := fmt.Sprintf("ipset destroy %s", ipsetName)
-			executeCommand(deleteCmdStr)
+			if err := executeCommand(deleteCmdStr); err != nil {
+				logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+				result = multierror.Append(result, err)
+			}
 		}
 	}
 
@@ -943,16 +993,15 @@ func (w *watcher) cleanupIpsets() error {
 					continue
 				}
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", ipset)
-				err := executeCommand(deleteCmdStr)
-				if err != nil {
-					logrus.Errorf("error while running cmd=%v :%v", deleteCmdStr, err)
-					return err
+				if err := executeCommand(deleteCmdStr); err != nil {
+					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					result = multierror.Append(result, err)
 				}
 			}
 		}
 	}
 
-	return nil
+	return result
 }
 
 func (w *watcher) applyIptablesRules(rulesMap map[int]map[string]Rule) error {
@@ -1067,17 +1116,24 @@ func (w *watcher) cleanup() error {
 
 func existsIPSet(name string) bool {
 	checkCmdStr := fmt.Sprintf("ipset list %s -name", name)
-	err := executeCommandNoStderr(checkCmdStr)
+	err := executeCommandNoStdoutNoStderr(checkCmdStr)
 
 	return err == nil
 }
 
-func createIPSet(name string, ips map[string]bool) {
+func createIPSet(name string, ips map[string]bool) error {
+	var result error
 	createStr := fmt.Sprintf("ipset create %s iphash", name)
-	executeCommand(createStr)
+	if err := executeCommand(createStr); err != nil {
+		return err
+	}
 
 	for ip := range ips {
 		addIPStr := fmt.Sprintf("ipset add %s %s", name, ip)
-		executeCommand(addIPStr)
+		if err := executeCommand(addIPStr); err != nil {
+			result = multierror.Append(result, err)
+		}
 	}
+
+	return result
 }
