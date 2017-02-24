@@ -28,26 +28,27 @@ const (
 )
 
 type watcher struct {
-	c                  metadata.Client
-	lastApplied        time.Time
-	doCleanup          bool
-	shutdownInProgress bool
-	signalCh           chan os.Signal
-	exitCh             chan int
-	defaultNetwork     *metadata.Network
-	defaultSubnet      string
-	stacks             []metadata.Stack
-	services           []metadata.Service
-	containers         []metadata.Container
-	servicesMapByName  map[string]*metadata.Service
-	appliedIPsets      map[string]map[string]bool
-	appliedRules       map[int]map[string]Rule
-	ipsets             map[string]map[string]bool
-	ipsetsNamesMap     map[string]string
-	rules              map[int]map[string]Rule
-	selfHost           *metadata.Host
-	appliednp          *NetworkPolicy
-	np                 *NetworkPolicy
+	c                   metadata.Client
+	lastApplied         time.Time
+	doCleanup           bool
+	shutdownInProgress  bool
+	signalCh            chan os.Signal
+	exitCh              chan int
+	defaultNetwork      *metadata.Network
+	defaultSubnet       string
+	stacks              []metadata.Stack
+	services            []metadata.Service
+	containers          []metadata.Container
+	containersMapByUUID map[string]*metadata.Container
+	servicesMapByName   map[string]*metadata.Service
+	appliedIPsets       map[string]map[string]bool
+	appliedRules        map[int]map[string]Rule
+	ipsets              map[string]map[string]bool
+	ipsetsNamesMap      map[string]string
+	rules               map[int]map[string]Rule
+	selfHost            *metadata.Host
+	appliednp           *NetworkPolicy
+	np                  *NetworkPolicy
 }
 
 // Rule is used to store the info need to be a iptables rule
@@ -334,6 +335,63 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 	return local, all
 }
 
+// This function returns IP addresses of dst and src containers of the linkedToContainers
+// on the default network
+func (w *watcher) getInfoFromLinkedContainers(
+	linkedToContainerUUID string, linkedFromContainersMap map[string]*metadata.Container) (
+	map[string]bool, map[string]bool) {
+	logrus.Debugf("getInfoFromLinkedContainers")
+
+	var dst, src map[string]bool
+	linkedToLocal := make(map[string]bool)
+	linkedToAll := make(map[string]bool)
+	linkedFromLocal := make(map[string]bool)
+	linkedFromAll := make(map[string]bool)
+
+	linkedToContainer, ok := w.containersMapByUUID[linkedToContainerUUID]
+	if !ok {
+		logrus.Errorf("error finding container by name: %v", linkedToContainerUUID)
+		return dst, src
+	}
+	logrus.Debugf("linkedToContainer: %+v", linkedToContainer)
+
+	if linkedToContainer.PrimaryIp != "" {
+		if linkedToContainer.HostUUID == w.selfHost.UUID {
+			linkedToLocal[linkedToContainer.PrimaryIp] = true
+		}
+		linkedToAll[linkedToContainer.PrimaryIp] = true
+	}
+
+	for _, linkedFromContainer := range linkedFromContainersMap {
+		logrus.Debugf("linkedFromContainer: %+v", linkedFromContainer)
+		if linkedFromContainer.PrimaryIp != "" {
+			if linkedFromContainer.HostUUID == w.selfHost.UUID {
+				linkedFromLocal[linkedFromContainer.PrimaryIp] = true
+			}
+			linkedFromAll[linkedFromContainer.PrimaryIp] = true
+		}
+	}
+
+	logrus.Debugf("linkedToLocal: %v", linkedToLocal)
+	logrus.Debugf("linkedToAll: %v", linkedToAll)
+	logrus.Debugf("linkedFromLocal: %v", linkedFromLocal)
+	logrus.Debugf("linkedFromAll: %v", linkedFromAll)
+
+	if len(linkedToLocal) > 0 {
+		dst = linkedToLocal
+		src = linkedFromAll
+	} else {
+		if len(linkedFromLocal) > 0 {
+			dst = linkedToAll
+			src = linkedFromLocal
+		}
+	}
+
+	logrus.Debugf("dst: %v", dst)
+	logrus.Debugf("src: %v", src)
+	return dst, src
+}
+
 // This function returns IP addresses of dst and src containers of the linkedTo service
 // on the default network
 func (w *watcher) getInfoFromLinkedServices(
@@ -342,7 +400,6 @@ func (w *watcher) getInfoFromLinkedServices(
 	logrus.Debugf("getInfoFromLinkedServices")
 
 	var dst, src map[string]bool
-	//src := make(map[string]bool)
 
 	linkedToService, ok := w.servicesMapByName[linkedTo]
 	if !ok {
@@ -462,8 +519,8 @@ func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, erro
 			continue
 		}
 		local, all := w.getInfoFromStack(stack)
-		ruleName := fmt.Sprintf("within.stack.%v", stack.Name)
 		if len(local) > 0 {
+			ruleName := fmt.Sprintf("within.stack.%v", stack.Name)
 			isStateful := false
 			isDstSystem := false
 			isSrcSystem := false
@@ -565,8 +622,8 @@ func (w *watcher) withinServiceHandler(p NetworkPolicyRule) (map[string]Rule, er
 			continue
 		}
 		local, all := w.getInfoFromService(service)
-		ruleName := fmt.Sprintf("within.service.%v.%v", service.StackName, service.Name)
 		if len(local) > 0 {
+			ruleName := fmt.Sprintf("within.service.%v.%v", service.StackName, service.Name)
 			isStateful := false
 			isDstSystem := false
 			isSrcSystem := false
@@ -597,8 +654,8 @@ func (w *watcher) withinLinkedHandler(p NetworkPolicyRule) (map[string]Rule, err
 		logrus.Debugf("linkedTo: %v, linkedFromMap: %v", linkedTo, linkedFromMap)
 
 		local, all := w.getInfoFromLinkedServices(linkedTo, linkedFromMap)
-		ruleName := fmt.Sprintf("within.linked.%v", linkedTo)
 		if len(local) > 0 {
+			ruleName := fmt.Sprintf("within.linked.%v", linkedTo)
 			isStateful := true
 			isDstSystem := false
 			isSrcSystem := false
@@ -615,8 +672,54 @@ func (w *watcher) withinLinkedHandler(p NetworkPolicyRule) (map[string]Rule, err
 		}
 	}
 
+	// Process links of standalone containers
+	linkedContainersMap := buildLinkedMappingsForContainers(w.containers)
+	for linkedToContainerUUID, linkedFromContainersMap := range linkedContainersMap {
+		logrus.Debugf("linkedToContainerUUID: %v, linkedFromContainersMap: %v", linkedToContainerUUID, linkedFromContainersMap)
+
+		local, all := w.getInfoFromLinkedContainers(linkedToContainerUUID, linkedFromContainersMap)
+		if len(local) > 0 {
+			displayName := linkedToContainerUUID
+			if linkedToContainer, ok := w.containersMapByUUID[linkedToContainerUUID]; ok {
+				displayName = linkedToContainer.Name
+			}
+			ruleName := fmt.Sprintf("within.linked.linkedTo.%v", displayName)
+			isStateful := true
+			isDstSystem := false
+			isSrcSystem := false
+			r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, local, all)
+			if err != nil {
+				return nil, err
+			}
+			r.action = p.Action
+
+			withinLinkedRulesMap[ruleName] = *r
+		}
+	}
+
 	logrus.Debugf("withinLinkedRulesMap: %v", withinLinkedRulesMap)
 	return withinLinkedRulesMap, nil
+}
+
+func buildLinkedMappingsForContainers(
+	containers []metadata.Container) map[string]map[string]*metadata.Container {
+	logrus.Debugf("buildLinkedMappingsForContainers")
+
+	linkedContainersMap := make(map[string]map[string]*metadata.Container)
+
+	for index, aContainer := range containers {
+		if len(aContainer.Links) > 0 {
+			for _, linkedContainerUUID := range aContainer.Links {
+				if _, found := linkedContainersMap[linkedContainerUUID]; !found {
+					linkedContainersMap[linkedContainerUUID] = make(map[string]*metadata.Container)
+				}
+				linkedContainersMap[linkedContainerUUID][aContainer.UUID] = &containers[index]
+			}
+		}
+	}
+
+	logrus.Debugf("linkedContainersMap: %v", linkedContainersMap)
+	return linkedContainersMap
 }
 
 func buildLinkedMappings(services []metadata.Service) map[string]map[string]*metadata.Service {
@@ -666,8 +769,8 @@ func (w *watcher) groupByHandler(p NetworkPolicyRule) (map[string]Rule, error) {
 		local := localAllMap["local"]
 		all := localAllMap["all"]
 
-		ruleName := fmt.Sprintf("between.%v.%v", p.Between.GroupBy, labelValue)
 		if len(local) > 0 {
+			ruleName := fmt.Sprintf("between.%v.%v", p.Between.GroupBy, labelValue)
 			isStateful := false
 			isDstSystem := false
 			isSrcSystem := false
@@ -793,6 +896,12 @@ func (w *watcher) fetchInfoFromMetadata() error {
 		return err
 	}
 
+	containersMapByUUID := make(map[string]*metadata.Container)
+	for index, aContainer := range containers {
+		key := aContainer.UUID
+		containersMapByUUID[key] = &containers[index]
+	}
+
 	selfHost, err := w.c.GetSelfHost()
 	if err != nil {
 		logrus.Errorf("Couldn't get self host from metadata: %v", err)
@@ -831,6 +940,7 @@ func (w *watcher) fetchInfoFromMetadata() error {
 	w.stacks = stacks
 	w.services = services
 	w.containers = containers
+	w.containersMapByUUID = containersMapByUUID
 	w.servicesMapByName = servicesMapByName
 
 	return nil
