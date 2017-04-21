@@ -24,7 +24,8 @@ const (
 	//hookToChain = "CATTLE_FORWARD"
 	hookToChain                  = "FORWARD"
 	cattleNetworkPolicyChainName = "CATTLE_NETWORK_POLICY"
-	ipsetNameMaxLength           = 31
+	cattleNetworkPolicyChainNameOut = "CATTLE_NETWORK_POLICY_OUT"
+	ipsetNameMaxLength           = 26
 )
 
 type watcher struct {
@@ -59,6 +60,7 @@ type Rule struct {
 	isStateful bool
 	action     string
 	system     bool
+	chain			 string
 }
 
 func setupKernelParameters() error {
@@ -69,11 +71,15 @@ func setupKernelParameters() error {
 func (rule *Rule) iptables(defaultPolicyAction string) []byte {
 	buf := &bytes.Buffer{}
 	var ruleTarget string
+	chain := cattleNetworkPolicyChainName
+	if(rule.chain != ""){
+		chain = rule.chain
+	}
 
 	// TODO: Check for ports etc
 
 	if rule.isStateful {
-		buf.WriteString(fmt.Sprintf("-A %v ", cattleNetworkPolicyChainName))
+		buf.WriteString(fmt.Sprintf("-A %v ", chain))
 		if rule.dst != "" {
 			buf.WriteString(fmt.Sprintf("-m set --match-set %v dst ", rule.dst))
 		}
@@ -91,7 +97,7 @@ func (rule *Rule) iptables(defaultPolicyAction string) []byte {
 		buf.WriteString(fmt.Sprintf("-j %v\n", ruleTarget))
 
 		// Reverse path
-		buf.WriteString(fmt.Sprintf("-A %v ", cattleNetworkPolicyChainName))
+		buf.WriteString(fmt.Sprintf("-A %v ", chain))
 		if rule.dst != "" {
 			buf.WriteString(fmt.Sprintf("-m set --match-set %v dst ", rule.src))
 		}
@@ -109,7 +115,7 @@ func (rule *Rule) iptables(defaultPolicyAction string) []byte {
 		buf.WriteString(fmt.Sprintf("-j %v\n", ruleTarget))
 
 	} else {
-		buf.WriteString(fmt.Sprintf("-A %v ", cattleNetworkPolicyChainName))
+		buf.WriteString(fmt.Sprintf("-A %v ", chain))
 		if rule.dst != "" {
 			buf.WriteString(fmt.Sprintf("-m set --match-set %v dst ", rule.dst))
 		}
@@ -149,6 +155,11 @@ func Watch(c metadata.Client, exitCh chan int, doCleanup bool) error {
 		exitCh:             exitCh,
 		signalCh:           sCh,
 	}
+
+	if err := w.insertChainOut(); err != nil {
+		return errors.Wrap(err, "Applying base iptables chain out")
+	}
+
 
 	go w.shutdown()
 	go c.OnChange(5, w.onChangeNoError)
@@ -392,6 +403,32 @@ func (w *watcher) getInfoFromLinkedContainers(
 	return dst, src
 }
 
+//This function returns IP addresses of external services defined in the stack
+func (w *watcher) getExtInfoFromStack(stack metadata.Stack) (map[string]bool, map[string]bool) {
+	local := make(map[string]bool)
+	all := make(map[string]bool)
+	for _, aService := range stack.Services {
+		if aService.Kind == "externalService" {
+			for _, extIP := range aService.ExternalIps {
+				if extIP != "" {
+					local[extIP] = true
+				}
+			}
+		}
+		for _, aContainer := range aService.Containers {
+			if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+				if aContainer.HostUUID == w.selfHost.UUID {
+					if aContainer.PrimaryIp != "" {
+						all[aContainer.PrimaryIp] = true
+					}
+				}
+			}
+		}
+
+	}
+	return local, all
+}
+
 // This function returns IP addresses of dst and src containers of the linkedTo service
 // on the default network
 func (w *watcher) getInfoFromLinkedServices(
@@ -486,6 +523,23 @@ func (w *watcher) defaultPolicyAction(action string) (map[string]Rule, error) {
 	return defPolicyActionMap, nil
 }
 
+func (w *watcher) defaultPolicyActionOut(action string) (map[string]Rule, error) {
+	defPolicyActionMap := make(map[string]Rule)
+
+	ruleName := "all.local.containers.out"
+	all := w.getAllLocalContainers()
+	isStateful := false
+	r, err := w.buildAndProcessRuleWithSrcDstExt(isStateful, ruleName, nil, all)
+	if err != nil {
+		return nil, err
+	}
+	r.action = action
+	defPolicyActionMap[ruleName] = *r
+
+	logrus.Debugf("defPolicyActionMap: %v", defPolicyActionMap)
+	return defPolicyActionMap, nil
+}
+
 func (w *watcher) defaultSystemStackPolicies() (map[string]Rule, error) {
 	defSysRulesMap := make(map[string]Rule)
 	for _, stack := range w.stacks {
@@ -493,22 +547,63 @@ func (w *watcher) defaultSystemStackPolicies() (map[string]Rule, error) {
 			continue
 		}
 
-		_, all := w.getInfoFromStack(stack)
-
-		ruleName := fmt.Sprintf("from.system.stack.%v", stack.Name)
-		isStateful := false
-		isDstSystem := true
-		isSrcSystem := true
-		r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, nil, all)
-		if err != nil {
-			return nil, err
+		local, all := w.getInfoFromStack(stack)
+		if len(all) > 0 {
+			ruleName := fmt.Sprintf("from.system.stack.%v", stack.Name)
+			isStateful := false
+			isDstSystem := true
+			isSrcSystem := true
+			r, err := w.buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem, ruleName, nil, all)
+			if err != nil {
+				return nil, err
+			}
+			r.action = ActionAllow
+			defSysRulesMap[ruleName] = *r
 		}
-		r.action = ActionAllow
-		defSysRulesMap[ruleName] = *r
+		if len(local) > 0 {
+			ruleName := fmt.Sprintf("ex.fr.system.stack.%v", stack.Name)
+			isStateful := false
+			r, err := w.buildAndProcessRuleWithSrcDstExt(isStateful, ruleName, nil, local)
+			if err != nil {
+				return nil, err
+			}
+			r.action = ActionAllow
+			defSysRulesMap[ruleName] = *r
+		}
 	}
 
 	logrus.Debugf("defSysRulesMap: %v", defSysRulesMap)
 	return defSysRulesMap, nil
+}
+
+// This function generates ipsets of ips within stacks
+func (w *watcher) withinStackAnalyzer() (map[string]Rule, error){
+	logrus.Debugf("withinStackAnalyzer")
+	withinStackRulesMap := make(map[string]Rule)
+	for _, stack := range w.stacks {
+		if stack.System {
+			continue
+		}
+		local,all := w.getExtInfoFromStack(stack)
+		if len(local) > 0 && len(all) > 0 {
+			ruleName := fmt.Sprintf("within.stack.ex.%v", stack.Name)
+			isStateful := false
+			r, err := w.buildAndProcessRuleWithSrcDstExt(isStateful, ruleName, local, all)
+			if err != nil {
+				return nil, err
+			}
+			r.action = ActionAllow
+
+			withinStackRulesMap[ruleName] = *r
+		} else {
+			logrus.Debugf("stack: %v doesn't have any local containers, skipping", stack.Name)
+			continue
+		}
+	}
+
+	logrus.Debugf("withinStackRulesMap: %v", withinStackRulesMap)
+	return withinStackRulesMap, nil
+
 }
 
 func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, error) {
@@ -543,6 +638,70 @@ func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, erro
 
 	logrus.Debugf("withinStackRulesMap: %v", withinStackRulesMap)
 	return withinStackRulesMap, nil
+}
+
+func (w *watcher) buildAndProcessRuleWithSrcDstExt(isStateful bool, ruleName string, local, all map[string]bool) (*Rule, error) {
+	var err error
+	var srcSetName, dstSetName, hashedDstSetName, hashedSrcSetName string
+
+	// process external ips, defined in the stack
+	if local != nil {
+		dstSetName = fmt.Sprintf("dst.e.%v", ruleName)
+		hashedDstSetName, err = w.generateHash(dstSetName)
+		if err != nil {
+			logrus.Errorf("coudln't generate hash: %v", err)
+			return nil, err
+		}
+		hashedDstSetName = "RNCH-UE-" + hashedDstSetName
+
+
+		if len(hashedDstSetName) > ipsetNameMaxLength {
+			logrus.Errorf("length of ipset names exceeded %v. hashedDstSetName: %v", ipsetNameMaxLength, hashedDstSetName)
+			hashedDstSetName = hashedDstSetName[0 : ipsetNameMaxLength-1]
+		}
+		if existingSet, exists := w.ipsets[hashedDstSetName]; exists {
+			if !reflect.DeepEqual(existingSet, local) {
+				return nil, fmt.Errorf("%v: mismatch existingSet: %v local:%v", hashedDstSetName, existingSet, local)
+			}
+		} else {
+			w.ipsets[hashedDstSetName] = local
+			w.ipsetsNamesMap[hashedDstSetName] = dstSetName
+		}
+	}
+
+	// process container ips, defined in the stack
+	if all != nil {
+
+		srcSetName = fmt.Sprintf("src.e.%v", ruleName)
+		hashedSrcSetName, err = w.generateHash(srcSetName)
+		if err != nil {
+			logrus.Errorf("coudln't generate hash: %v", err)
+			return nil, err
+		}
+		hashedSrcSetName = "RNCH-UE-" + hashedSrcSetName
+
+		if len(hashedSrcSetName) > ipsetNameMaxLength {
+			logrus.Errorf("length of ipset names exceeded %v. hashedSrcSetName: %v", ipsetNameMaxLength, hashedSrcSetName)
+			hashedSrcSetName = hashedSrcSetName[0 : ipsetNameMaxLength-1]
+		}
+		if existingSet, exists := w.ipsets[hashedSrcSetName]; exists {
+			if !reflect.DeepEqual(existingSet, all) {
+				logrus.Errorf("%v: mismatch existingSet: %v all:%v", hashedSrcSetName, existingSet, all)
+			}
+		} else {
+			w.ipsets[hashedSrcSetName] = all
+			w.ipsetsNamesMap[hashedSrcSetName] = srcSetName
+		}
+	}
+	logrus.Debugf("dst: %v (%v) src: %v (%v)", hashedDstSetName, dstSetName, hashedSrcSetName, srcSetName)
+
+	r := &Rule{dst: hashedDstSetName,
+		src:        hashedSrcSetName,
+		isStateful: isStateful,
+		chain: cattleNetworkPolicyChainNameOut,
+	}
+
+	return r, nil
 }
 
 func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSystem bool, ruleName string, local, all map[string]bool) (*Rule, error) {
@@ -842,7 +1001,23 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 
 		}
 
+		r,err = w.withinStackAnalyzer()
+		if err != nil {
+			logrus.Errorf("error translating default Stack Analyzer action: %v", err)
+			return err
+		}
+		w.rules[index] = r
+		index++
+
 		r, err = w.defaultPolicyAction(np.DefaultAction)
+		if err != nil {
+			logrus.Errorf("error translating default NetworkPolicy action: %v", err)
+			return err
+		}
+		w.rules[index] = r
+		index++
+
+		r, err = w.defaultPolicyActionOut(np.DefaultAction)
 		if err != nil {
 			logrus.Errorf("error translating default NetworkPolicy action: %v", err)
 			return err
@@ -1163,14 +1338,39 @@ func (w *watcher) run(args ...string) error {
 }
 
 func (w *watcher) insertBaseRules() error {
+	err := w.deleteBaseRules()
+	err = w.deleteBaseRulesOut()
+	err = w.insertBaseRulesOut()
 	checkRule := fmt.Sprintf("iptables -w -C %v -d %v -s %v -j %v",
 		hookToChain, w.defaultSubnet, w.defaultSubnet, cattleNetworkPolicyChainName)
 	if executeCommandNoStderr(checkRule) != nil {
 		addRule := fmt.Sprintf("iptables -w -I %v -d %v -s %v -j %v",
 			hookToChain, w.defaultSubnet, w.defaultSubnet, cattleNetworkPolicyChainName)
-		return executeCommand(addRule)
+		err = executeCommand(addRule)
 	}
-	return nil
+	return err
+}
+
+func (w *watcher) insertBaseRulesOut() error {
+	var err error
+	checkRule := fmt.Sprintf("iptables -w -C %v ! -d %v -s %v -j %v",
+		hookToChain, w.defaultSubnet, w.defaultSubnet, cattleNetworkPolicyChainNameOut)
+	if executeCommandNoStderr(checkRule) != nil {
+		addRule := fmt.Sprintf("iptables -w -I %v ! -d %v -s %v -j %v",
+			hookToChain, w.defaultSubnet, w.defaultSubnet, cattleNetworkPolicyChainNameOut)
+			err = executeCommand(addRule)
+	}
+	checkRuleDNS := fmt.Sprintf("iptables -w -C %v -d %v -s %v -j %v",
+	cattleNetworkPolicyChainNameOut, "169.254.169.250", w.defaultSubnet, "ACCEPT")
+	if executeCommandNoStderr(checkRuleDNS) != nil {
+		addRule := fmt.Sprintf("iptables -w -I %v 1 -d %v -s %v -j %v",
+		cattleNetworkPolicyChainNameOut, "169.254.169.250", w.defaultSubnet, "ACCEPT")
+		err = executeCommand(addRule)
+		//addRule = fmt.Sprintf("iptables -w -I %v -s %v -j %v",
+		//cattleNetworkPolicyChainNameOut, w.defaultSubnet, "DROP")
+		//err = executeCommand(addRule)
+	}
+	return err
 }
 
 func (w *watcher) deleteBaseRules() error {
@@ -1179,6 +1379,17 @@ func (w *watcher) deleteBaseRules() error {
 	if executeCommandNoStderr(checkRule) == nil {
 		delRule := fmt.Sprintf("iptables -w -D %v -d %v -s %v -j %v",
 			hookToChain, w.defaultSubnet, w.defaultSubnet, cattleNetworkPolicyChainName)
+		return executeCommand(delRule)
+	}
+	return nil
+}
+
+func (w *watcher) deleteBaseRulesOut() error {
+	checkRule := fmt.Sprintf("iptables -w -C %v ! -d %v -s %v -j %v",
+		hookToChain, w.defaultSubnet, w.defaultSubnet, cattleNetworkPolicyChainNameOut)
+	if executeCommandNoStderr(checkRule) == nil {
+		delRule := fmt.Sprintf("iptables -w -D %v ! -d %v -s %v -j %v",
+			hookToChain, w.defaultSubnet, w.defaultSubnet, cattleNetworkPolicyChainNameOut)
 		return executeCommand(delRule)
 	}
 	return nil
@@ -1201,6 +1412,35 @@ func (w *watcher) flushAndDeleteChain() error {
 	return nil
 }
 
+func (w *watcher) flushAndDeleteChainOut() error {
+	checkRule := fmt.Sprintf("iptables -w -L %v", cattleNetworkPolicyChainNameOut)
+	if executeCommandNoStderr(checkRule) == nil {
+		if err := w.run("iptables", "-w", "-F", cattleNetworkPolicyChainNameOut); err != nil {
+			logrus.Errorf("Error flushing the chain: %v", cattleNetworkPolicyChainNameOut)
+			return err
+		}
+
+		if err := w.run("iptables", "-X", cattleNetworkPolicyChainNameOut); err != nil {
+			logrus.Errorf("Error deleting the chain: %v", cattleNetworkPolicyChainNameOut)
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (w *watcher) insertChainOut() error {
+	checkRule := fmt.Sprintf("iptables -w -L %v", cattleNetworkPolicyChainNameOut)
+	if executeCommandNoStderr(checkRule) == nil {
+		return nil
+	}
+	if err := w.run("iptables", "-N", cattleNetworkPolicyChainNameOut); err != nil {
+		logrus.Errorf("Error inserting the chain out: %v", cattleNetworkPolicyChainNameOut)
+		return err
+	}
+	return nil
+}
+
 func (w *watcher) cleanup() error {
 	logrus.Debugf("Doing cleanup")
 	// delete the base Rule
@@ -1209,8 +1449,20 @@ func (w *watcher) cleanup() error {
 		return err
 	}
 
+	// delete the base Rule Out
+	if err := w.deleteBaseRulesOut(); err != nil {
+		logrus.Errorf("error deleting base rules: %v", err)
+		return err
+	}
+
 	// Flush and delete the chain
 	if err := w.flushAndDeleteChain(); err != nil {
+		logrus.Errorf("error flusing and deleting chain: %v", err)
+		return err
+	}
+
+	// Flush and delete the chain Out
+	if err := w.flushAndDeleteChainOut(); err != nil {
 		logrus.Errorf("error flusing and deleting chain: %v", err)
 		return err
 	}
