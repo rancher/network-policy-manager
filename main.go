@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/Sirupsen/logrus"
@@ -13,14 +14,18 @@ import (
 // VERSION of the application, that can defined during build time
 var VERSION = "v0.0.0-dev"
 
+const (
+	metadataURLTemplate = "http://%v/2016-07-29"
+)
+
 func main() {
 	app := cli.NewApp()
 	app.Name = "network-policy-manager"
 	app.Version = VERSION
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
-			Name:  "metadata-url",
-			Value: "http://169.254.169.250/2016-07-29",
+			Name:  "metadata-address",
+			Value: "169.254.169.250",
 		},
 		cli.BoolFlag{
 			Name:  "debug",
@@ -40,8 +45,9 @@ func run(c *cli.Context) error {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
+	metadataURL := fmt.Sprintf(metadataURLTemplate, c.String("metadata-address"))
 	logrus.Infof("Waiting for metadata")
-	mClient, err := metadata.NewClientAndWait(c.String("metadata-url"))
+	mClient, err := metadata.NewClientAndWait(metadataURL)
 	if err != nil {
 		return errors.Wrap(err, "Creating metadata client")
 	}
