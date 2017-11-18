@@ -1,0 +1,7 @@
+/.dapper
+/bin
+/dist
+*.swp
+/.trash-cache
+network-policy-manager
+downloads

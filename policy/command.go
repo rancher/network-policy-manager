@@ -5,11 +5,11 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/leodotcloud/log"
 )
 
 func execCmdNoStdoutNoStderr(cmd *exec.Cmd) error {
-	logrus.Debugf("cmd: %+v", cmd)
+	log.Debugf("cmd: %+v", cmd)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	err := cmd.Run()
@@ -21,7 +21,7 @@ func execCmdNoStdoutNoStderr(cmd *exec.Cmd) error {
 }
 
 func execCmdNoStderr(cmd *exec.Cmd) error {
-	logrus.Debugf("cmd: %+v", cmd)
+	log.Debugf("cmd: %+v", cmd)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = nil
 	err := cmd.Run()
@@ -33,10 +33,10 @@ func execCmdNoStderr(cmd *exec.Cmd) error {
 }
 
 func execCmd(cmd *exec.Cmd) error {
-	logrus.Debugf("cmd: %+v", cmd)
+	log.Debugf("cmd: %+v", cmd)
 	cmdOutput, err := cmd.CombinedOutput()
 	if err != nil {
-		logrus.Errorf("err: %v, cmdOut=%v", err, string(cmdOutput))
+		log.Errorf("err: %v, cmdOut=%v", err, string(cmdOutput))
 		return err
 	}
 

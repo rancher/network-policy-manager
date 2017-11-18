@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/hashicorp/go-multierror"
+	"github.com/leodotcloud/log"
 	"github.com/mitchellh/hashstructure"
 	"github.com/pkg/errors"
 	"github.com/rancher/go-rancher-metadata/metadata"
@@ -135,7 +135,7 @@ func (rule *Rule) iptables(defaultPolicyAction string) []byte {
 func Watch(c metadata.Client, exitCh chan int, doCleanup bool) error {
 	err := setupKernelParameters()
 	if err != nil {
-		logrus.Errorf("Error setting up needed kernel parameters: %v", err)
+		log.Errorf("Error setting up needed kernel parameters: %v", err)
 		return err
 	}
 
@@ -157,7 +157,7 @@ func Watch(c metadata.Client, exitCh chan int, doCleanup bool) error {
 
 func (w *watcher) shutdown() {
 	<-w.signalCh
-	logrus.Infof("Got shutdown signal")
+	log.Infof("Got shutdown signal")
 
 	w.shutdownInProgress = true
 
@@ -170,14 +170,14 @@ func (w *watcher) shutdown() {
 }
 
 func (w *watcher) onChangeNoError(version string) {
-	logrus.Debugf("onChangeNoError version: %v", version)
+	log.Debugf("onChangeNoError version: %v", version)
 	if w.shutdownInProgress {
-		logrus.Infof("Shutdown in progress, no more processing")
+		log.Infof("Shutdown in progress, no more processing")
 		return
 	}
 
 	if err := w.onChange(version); err != nil {
-		logrus.Errorf("Failed to apply network NetworkPolicy: %v", err)
+		log.Errorf("Failed to apply network NetworkPolicy: %v", err)
 	}
 }
 
@@ -224,7 +224,7 @@ func (w *watcher) getDefaultNetwork() (*metadata.Network, error) {
 //			   10.42.2.2: true
 //
 func (w *watcher) getContainersGroupedBy(label string) map[string]map[string]map[string]bool {
-	logrus.Debugf("getting containers grouped by: %v", label)
+	log.Debugf("getting containers grouped by: %v", label)
 	groupByMap := make(map[string]map[string]map[string]bool)
 
 	for _, aContainer := range w.containers {
@@ -253,7 +253,7 @@ func (w *watcher) getContainersGroupedBy(label string) map[string]map[string]map
 		}
 	}
 
-	logrus.Debugf("groupByMap: %v", groupByMap)
+	log.Debugf("groupByMap: %v", groupByMap)
 	return groupByMap
 }
 
@@ -284,14 +284,14 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 // on the default network.
 // Any sidekick service is also considered part of the same service.
 func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool, map[string]bool) {
-	logrus.Debugf("getInfoFromService service: %v", service)
+	log.Debugf("getInfoFromService service: %v", service)
 	local := make(map[string]bool)
 	all := make(map[string]bool)
 
 	// This means it's a sidekick service, it will handled as part of the
 	// primary service, so skipping here.
 	if service.Name != service.PrimaryServiceName {
-		logrus.Debugf("service: %v is sidekick, skipping", service.Name)
+		log.Debugf("service: %v is sidekick, skipping", service.Name)
 		return local, all
 	}
 
@@ -310,11 +310,11 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 
 	for _, aSKServiceName := range service.Sidekicks {
 		aSKServiceNameLowerCase := strings.ToLower(aSKServiceName)
-		logrus.Debugf("aSKServiceNameLowerCase: %v", aSKServiceNameLowerCase)
+		log.Debugf("aSKServiceNameLowerCase: %v", aSKServiceNameLowerCase)
 		fullSKServiceName := service.StackName + "/" + aSKServiceNameLowerCase
 		sidekickService, found := w.servicesMapByName[fullSKServiceName]
 		if !found {
-			logrus.Errorf("unable to find sidekick service: %v", fullSKServiceName)
+			log.Errorf("unable to find sidekick service: %v", fullSKServiceName)
 			continue
 		}
 
@@ -340,7 +340,7 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 func (w *watcher) getInfoFromLinkedContainers(
 	linkedToContainerUUID string, linkedFromContainersMap map[string]*metadata.Container) (
 	map[string]bool, map[string]bool) {
-	logrus.Debugf("getInfoFromLinkedContainers")
+	log.Debugf("getInfoFromLinkedContainers")
 
 	var dst, src map[string]bool
 	linkedToLocal := make(map[string]bool)
@@ -350,10 +350,10 @@ func (w *watcher) getInfoFromLinkedContainers(
 
 	linkedToContainer, ok := w.containersMapByUUID[linkedToContainerUUID]
 	if !ok {
-		logrus.Errorf("error finding container by name: %v", linkedToContainerUUID)
+		log.Errorf("error finding container by name: %v", linkedToContainerUUID)
 		return dst, src
 	}
-	logrus.Debugf("linkedToContainer: %+v", linkedToContainer)
+	log.Debugf("linkedToContainer: %+v", linkedToContainer)
 
 	if linkedToContainer.PrimaryIp != "" {
 		if linkedToContainer.HostUUID == w.selfHost.UUID {
@@ -363,7 +363,7 @@ func (w *watcher) getInfoFromLinkedContainers(
 	}
 
 	for _, linkedFromContainer := range linkedFromContainersMap {
-		logrus.Debugf("linkedFromContainer: %+v", linkedFromContainer)
+		log.Debugf("linkedFromContainer: %+v", linkedFromContainer)
 		if linkedFromContainer.PrimaryIp != "" {
 			if linkedFromContainer.HostUUID == w.selfHost.UUID {
 				linkedFromLocal[linkedFromContainer.PrimaryIp] = true
@@ -372,10 +372,10 @@ func (w *watcher) getInfoFromLinkedContainers(
 		}
 	}
 
-	logrus.Debugf("linkedToLocal: %v", linkedToLocal)
-	logrus.Debugf("linkedToAll: %v", linkedToAll)
-	logrus.Debugf("linkedFromLocal: %v", linkedFromLocal)
-	logrus.Debugf("linkedFromAll: %v", linkedFromAll)
+	log.Debugf("linkedToLocal: %v", linkedToLocal)
+	log.Debugf("linkedToAll: %v", linkedToAll)
+	log.Debugf("linkedFromLocal: %v", linkedFromLocal)
+	log.Debugf("linkedFromAll: %v", linkedFromAll)
 
 	if len(linkedToLocal) > 0 {
 		dst = linkedToLocal
@@ -387,8 +387,8 @@ func (w *watcher) getInfoFromLinkedContainers(
 		}
 	}
 
-	logrus.Debugf("dst: %v", dst)
-	logrus.Debugf("src: %v", src)
+	log.Debugf("dst: %v", dst)
+	log.Debugf("src: %v", src)
 	return dst, src
 }
 
@@ -397,24 +397,24 @@ func (w *watcher) getInfoFromLinkedContainers(
 func (w *watcher) getInfoFromLinkedServices(
 	linkedTo string, linkedFromMap map[string]*metadata.Service) (
 	map[string]bool, map[string]bool) {
-	logrus.Debugf("getInfoFromLinkedServices")
+	log.Debugf("getInfoFromLinkedServices")
 
 	var dst, src map[string]bool
 
 	linkedToService, ok := w.servicesMapByName[linkedTo]
 	if !ok {
-		logrus.Errorf("error finding service by name: %v", linkedTo)
+		log.Errorf("error finding service by name: %v", linkedTo)
 		return nil, nil
 	}
 	linkedToLocal, linkedToAll := w.getInfoFromService(*linkedToService)
-	logrus.Debugf("linkedToLocal: %v", linkedToLocal)
-	logrus.Debugf("linkedToAll: %v", linkedToAll)
+	log.Debugf("linkedToLocal: %v", linkedToLocal)
+	log.Debugf("linkedToAll: %v", linkedToAll)
 
 	linkedFromAll := make(map[string]bool)
 	for _, aLinkedFromService := range linkedFromMap {
 		fromLocal, fromAll := w.getInfoFromService(*aLinkedFromService)
-		logrus.Debugf("fromLocal: %v", fromLocal)
-		logrus.Debugf("fromAll: %v", fromAll)
+		log.Debugf("fromLocal: %v", fromLocal)
+		log.Debugf("fromAll: %v", fromAll)
 
 		if len(linkedToLocal) > 0 {
 			for k, v := range fromAll {
@@ -434,8 +434,8 @@ func (w *watcher) getInfoFromLinkedServices(
 		src = linkedFromAll
 	}
 
-	logrus.Debugf("dst: %v", dst)
-	logrus.Debugf("src: %v", src)
+	log.Debugf("dst: %v", dst)
+	log.Debugf("src: %v", src)
 	return dst, src
 }
 
@@ -463,7 +463,7 @@ func (w *watcher) getAllLocalContainers() map[string]bool {
 		}
 	}
 
-	logrus.Debugf("all local containers: %v", all)
+	log.Debugf("all local containers: %v", all)
 	return all
 }
 
@@ -482,7 +482,7 @@ func (w *watcher) defaultPolicyAction(action string) (map[string]Rule, error) {
 	r.action = action
 	defPolicyActionMap[ruleName] = *r
 
-	logrus.Debugf("defPolicyActionMap: %v", defPolicyActionMap)
+	log.Debugf("defPolicyActionMap: %v", defPolicyActionMap)
 	return defPolicyActionMap, nil
 }
 
@@ -507,12 +507,12 @@ func (w *watcher) defaultSystemStackPolicies() (map[string]Rule, error) {
 		defSysRulesMap[ruleName] = *r
 	}
 
-	logrus.Debugf("defSysRulesMap: %v", defSysRulesMap)
+	log.Debugf("defSysRulesMap: %v", defSysRulesMap)
 	return defSysRulesMap, nil
 }
 
 func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, error) {
-	logrus.Debugf("withinStackHandler")
+	log.Debugf("withinStackHandler")
 	withinStackRulesMap := make(map[string]Rule)
 	for _, stack := range w.stacks {
 		if stack.System {
@@ -536,12 +536,12 @@ func (w *watcher) withinStackHandler(p NetworkPolicyRule) (map[string]Rule, erro
 
 			withinStackRulesMap[ruleName] = *r
 		} else {
-			logrus.Debugf("stack: %v doesn't have any local containers, skipping", stack.Name)
+			log.Debugf("stack: %v doesn't have any local containers, skipping", stack.Name)
 			continue
 		}
 	}
 
-	logrus.Debugf("withinStackRulesMap: %v", withinStackRulesMap)
+	log.Debugf("withinStackRulesMap: %v", withinStackRulesMap)
 	return withinStackRulesMap, nil
 }
 
@@ -553,7 +553,7 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSy
 		dstSetName = fmt.Sprintf("dst.%v", ruleName)
 		hashedDstSetName, err = w.generateHash(dstSetName)
 		if err != nil {
-			logrus.Errorf("coudln't generate hash: %v", err)
+			log.Errorf("coudln't generate hash: %v", err)
 			return nil, err
 		}
 
@@ -564,7 +564,7 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSy
 		}
 
 		if len(hashedDstSetName) > ipsetNameMaxLength {
-			logrus.Errorf("length of ipset names exceeded %v. hashedDstSetName: %v", ipsetNameMaxLength, hashedDstSetName)
+			log.Errorf("length of ipset names exceeded %v. hashedDstSetName: %v", ipsetNameMaxLength, hashedDstSetName)
 			hashedDstSetName = hashedDstSetName[0 : ipsetNameMaxLength-1]
 		}
 		if existingSet, exists := w.ipsets[hashedDstSetName]; exists {
@@ -582,7 +582,7 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSy
 		srcSetName = fmt.Sprintf("src.%v", ruleName)
 		hashedSrcSetName, err = w.generateHash(srcSetName)
 		if err != nil {
-			logrus.Errorf("coudln't generate hash: %v", err)
+			log.Errorf("coudln't generate hash: %v", err)
 			return nil, err
 		}
 		if isSrcSystem {
@@ -591,12 +591,12 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSy
 			hashedSrcSetName = "RNCH-U-" + hashedSrcSetName
 		}
 		if len(hashedSrcSetName) > ipsetNameMaxLength {
-			logrus.Errorf("length of ipset names exceeded %v. hashedSrcSetName: %v", ipsetNameMaxLength, hashedSrcSetName)
+			log.Errorf("length of ipset names exceeded %v. hashedSrcSetName: %v", ipsetNameMaxLength, hashedSrcSetName)
 			hashedSrcSetName = hashedSrcSetName[0 : ipsetNameMaxLength-1]
 		}
 		if existingSet, exists := w.ipsets[hashedSrcSetName]; exists {
 			if !reflect.DeepEqual(existingSet, all) {
-				logrus.Errorf("%v: mismatch existingSet: %v all:%v", hashedSrcSetName, existingSet, all)
+				log.Errorf("%v: mismatch existingSet: %v all:%v", hashedSrcSetName, existingSet, all)
 			}
 		} else {
 			w.ipsets[hashedSrcSetName] = all
@@ -604,7 +604,7 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSy
 		}
 	}
 
-	logrus.Debugf("dst: %v (%v) src: %v (%v)", hashedDstSetName, dstSetName, hashedSrcSetName, srcSetName)
+	log.Debugf("dst: %v (%v) src: %v (%v)", hashedDstSetName, dstSetName, hashedSrcSetName, srcSetName)
 
 	r := &Rule{dst: hashedDstSetName,
 		src:        hashedSrcSetName,
@@ -615,7 +615,7 @@ func (w *watcher) buildAndProcessRuleWithSrcDst(isStateful, isDstSystem, isSrcSy
 }
 
 func (w *watcher) withinServiceHandler(p NetworkPolicyRule) (map[string]Rule, error) {
-	logrus.Debugf("withinServiceHandler")
+	log.Debugf("withinServiceHandler")
 	withinServiceRulesMap := make(map[string]Rule)
 	for _, service := range w.services {
 		if service.System {
@@ -635,23 +635,23 @@ func (w *watcher) withinServiceHandler(p NetworkPolicyRule) (map[string]Rule, er
 
 			withinServiceRulesMap[ruleName] = *r
 		} else {
-			logrus.Debugf("service: %v doesn't have any local containers, skipping", service.Name)
+			log.Debugf("service: %v doesn't have any local containers, skipping", service.Name)
 			continue
 		}
 	}
 
-	logrus.Debugf("withinServiceRulesMap: %v", withinServiceRulesMap)
+	log.Debugf("withinServiceRulesMap: %v", withinServiceRulesMap)
 	return withinServiceRulesMap, nil
 }
 
 func (w *watcher) withinLinkedHandler(p NetworkPolicyRule) (map[string]Rule, error) {
-	logrus.Debugf("withinLinkedHandler")
+	log.Debugf("withinLinkedHandler")
 	withinLinkedRulesMap := make(map[string]Rule)
 
 	linkedMappings := buildLinkedMappings(w.services)
 
 	for linkedTo, linkedFromMap := range linkedMappings {
-		logrus.Debugf("linkedTo: %v, linkedFromMap: %v", linkedTo, linkedFromMap)
+		log.Debugf("linkedTo: %v, linkedFromMap: %v", linkedTo, linkedFromMap)
 
 		local, all := w.getInfoFromLinkedServices(linkedTo, linkedFromMap)
 		if len(local) > 0 {
@@ -667,7 +667,7 @@ func (w *watcher) withinLinkedHandler(p NetworkPolicyRule) (map[string]Rule, err
 
 			withinLinkedRulesMap[ruleName] = *r
 		} else {
-			logrus.Debugf("linked service: %v doesn't have any local containers, skipping", linkedTo)
+			log.Debugf("linked service: %v doesn't have any local containers, skipping", linkedTo)
 			continue
 		}
 	}
@@ -675,7 +675,7 @@ func (w *watcher) withinLinkedHandler(p NetworkPolicyRule) (map[string]Rule, err
 	// Process links of standalone containers
 	linkedContainersMap := buildLinkedMappingsForContainers(w.containers)
 	for linkedToContainerUUID, linkedFromContainersMap := range linkedContainersMap {
-		logrus.Debugf("linkedToContainerUUID: %v, linkedFromContainersMap: %v", linkedToContainerUUID, linkedFromContainersMap)
+		log.Debugf("linkedToContainerUUID: %v, linkedFromContainersMap: %v", linkedToContainerUUID, linkedFromContainersMap)
 
 		local, all := w.getInfoFromLinkedContainers(linkedToContainerUUID, linkedFromContainersMap)
 		if len(local) > 0 {
@@ -697,13 +697,13 @@ func (w *watcher) withinLinkedHandler(p NetworkPolicyRule) (map[string]Rule, err
 		}
 	}
 
-	logrus.Debugf("withinLinkedRulesMap: %v", withinLinkedRulesMap)
+	log.Debugf("withinLinkedRulesMap: %v", withinLinkedRulesMap)
 	return withinLinkedRulesMap, nil
 }
 
 func buildLinkedMappingsForContainers(
 	containers []metadata.Container) map[string]map[string]*metadata.Container {
-	logrus.Debugf("buildLinkedMappingsForContainers")
+	log.Debugf("buildLinkedMappingsForContainers")
 
 	linkedContainersMap := make(map[string]map[string]*metadata.Container)
 
@@ -718,12 +718,12 @@ func buildLinkedMappingsForContainers(
 		}
 	}
 
-	logrus.Debugf("linkedContainersMap: %v", linkedContainersMap)
+	log.Debugf("linkedContainersMap: %v", linkedContainersMap)
 	return linkedContainersMap
 }
 
 func buildLinkedMappings(services []metadata.Service) map[string]map[string]*metadata.Service {
-	logrus.Debugf("buildLinkedMappings")
+	log.Debugf("buildLinkedMappings")
 
 	linkedServicesMap := make(map[string]map[string]*metadata.Service)
 
@@ -731,8 +731,8 @@ func buildLinkedMappings(services []metadata.Service) map[string]map[string]*met
 		if service.System || len(service.Links) == 0 {
 			continue
 		}
-		//logrus.Debugf("service: %v", service)
-		logrus.Debugf("service.Links: %v", service.Links)
+		//log.Debugf("service: %v", service)
+		log.Debugf("service.Links: %v", service.Links)
 		for linkedService := range service.Links {
 			linkedServiceLowerCase := strings.ToLower(linkedService)
 			if _, found := linkedServicesMap[linkedServiceLowerCase]; !found {
@@ -743,12 +743,12 @@ func buildLinkedMappings(services []metadata.Service) map[string]map[string]*met
 		}
 	}
 
-	logrus.Debugf("linkedServicesMap: %v", linkedServicesMap)
+	log.Debugf("linkedServicesMap: %v", linkedServicesMap)
 	return linkedServicesMap
 }
 
 func (w *watcher) withinPolicyHandler(p NetworkPolicyRule) (map[string]Rule, error) {
-	logrus.Debugf("withinPolicyHandler: %v", p)
+	log.Debugf("withinPolicyHandler: %v", p)
 	if p.Within == StrStack {
 		return w.withinStackHandler(p)
 	} else if p.Within == StrService {
@@ -761,7 +761,7 @@ func (w *watcher) withinPolicyHandler(p NetworkPolicyRule) (map[string]Rule, err
 }
 
 func (w *watcher) groupByHandler(p NetworkPolicyRule) (map[string]Rule, error) {
-	logrus.Debugf("groupByHandler")
+	log.Debugf("groupByHandler")
 
 	betweenGroupByRulesMap := make(map[string]Rule)
 	groupByMap := w.getContainersGroupedBy(p.Between.GroupBy)
@@ -786,7 +786,7 @@ func (w *watcher) groupByHandler(p NetworkPolicyRule) (map[string]Rule, error) {
 }
 
 func (w *watcher) betweenPolicyHandler(p NetworkPolicyRule) (map[string]Rule, error) {
-	logrus.Debugf("betweenPolicyHandler")
+	log.Debugf("betweenPolicyHandler")
 
 	if p.Between.GroupBy != "" {
 		return w.groupByHandler(p)
@@ -807,20 +807,20 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 
 		r, err := w.defaultSystemStackPolicies()
 		if err != nil {
-			logrus.Errorf("error translating default system Rules: %v", err)
+			log.Errorf("error translating default system Rules: %v", err)
 			return err
 		}
 		w.rules[index] = r
 		index++
 
 		for _, p := range np.Rules {
-			logrus.Debugf("Working on: p:%#v", p)
+			log.Debugf("Working on: p:%#v", p)
 
 			// within Handler
 			if p.Within != "" {
 				r, err := w.withinPolicyHandler(p)
 				if err != nil {
-					logrus.Errorf("error: %v", err)
+					log.Errorf("error: %v", err)
 				} else {
 					w.rules[index] = r
 				}
@@ -832,7 +832,7 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 			if p.Between != nil {
 				r, err := w.betweenPolicyHandler(p)
 				if err != nil {
-					logrus.Errorf("error: %v", err)
+					log.Errorf("error: %v", err)
 				} else {
 					w.rules[index] = r
 				}
@@ -844,7 +844,7 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 
 		r, err = w.defaultPolicyAction(np.DefaultAction)
 		if err != nil {
-			logrus.Errorf("error translating default NetworkPolicy action: %v", err)
+			log.Errorf("error translating default NetworkPolicy action: %v", err)
 			return err
 		}
 		w.rules[index] = r
@@ -855,7 +855,7 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 
 			r, err := w.defaultSystemStackPolicies()
 			if err != nil {
-				logrus.Errorf("error translating default system Rules: %v", err)
+				log.Errorf("error translating default system Rules: %v", err)
 				return err
 			}
 			w.rules[index] = r
@@ -863,7 +863,7 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 
 			r, err = w.defaultPolicyAction(np.DefaultAction)
 			if err != nil {
-				logrus.Errorf("error translating default NetworkPolicy action: %v", err)
+				log.Errorf("error translating default NetworkPolicy action: %v", err)
 				return err
 			}
 			w.rules[index] = r
@@ -871,8 +871,8 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 		}
 	}
 
-	logrus.Debugf("w.rules: %#v", w.rules)
-	logrus.Debugf("w.ipsets: %#v", w.ipsets)
+	log.Debugf("w.rules: %#v", w.rules)
+	log.Debugf("w.ipsets: %#v", w.ipsets)
 
 	return nil
 }
@@ -880,19 +880,19 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 func (w *watcher) fetchInfoFromMetadata() error {
 	stacks, err := w.c.GetStacks()
 	if err != nil {
-		logrus.Errorf("Error getting stacks from metadata: %v", err)
+		log.Errorf("Error getting stacks from metadata: %v", err)
 		return err
 	}
 
 	services, err := w.c.GetServices()
 	if err != nil {
-		logrus.Errorf("Error getting services from metadata: %v", err)
+		log.Errorf("Error getting services from metadata: %v", err)
 		return err
 	}
 
 	containers, err := w.c.GetContainers()
 	if err != nil {
-		logrus.Errorf("Error getting containers from metadata: %v", err)
+		log.Errorf("Error getting containers from metadata: %v", err)
 		return err
 	}
 
@@ -904,23 +904,23 @@ func (w *watcher) fetchInfoFromMetadata() error {
 
 	selfHost, err := w.c.GetSelfHost()
 	if err != nil {
-		logrus.Errorf("Couldn't get self host from metadata: %v", err)
+		log.Errorf("Couldn't get self host from metadata: %v", err)
 		return err
 	}
 
 	defaultNetwork, err := w.getDefaultNetwork()
 	if err != nil {
-		logrus.Errorf("Error while finding default network: %v", err)
+		log.Errorf("Error while finding default network: %v", err)
 		return err
 	}
-	logrus.Debugf("defaultNetwork: %#v", defaultNetwork)
+	log.Debugf("defaultNetwork: %#v", defaultNetwork)
 
 	defaultSubnet, err := getBridgeSubnet(defaultNetwork)
 	if err != nil {
-		logrus.Errorf("Error while finding default subnet: %v", err)
+		log.Errorf("Error while finding default subnet: %v", err)
 		return err
 	}
-	logrus.Debugf("defaultSubnet: %#v", defaultSubnet)
+	log.Debugf("defaultSubnet: %#v", defaultSubnet)
 
 	servicesMapByName := make(map[string]*metadata.Service)
 	for _, aStack := range stacks {
@@ -932,7 +932,7 @@ func (w *watcher) fetchInfoFromMetadata() error {
 			servicesMapByName[key] = &aStack.Services[index]
 		}
 	}
-	logrus.Debugf("servicesMapByName: %v", servicesMapByName)
+	log.Debugf("servicesMapByName: %v", servicesMapByName)
 
 	w.defaultNetwork = defaultNetwork
 	w.defaultSubnet = defaultSubnet
@@ -947,26 +947,26 @@ func (w *watcher) fetchInfoFromMetadata() error {
 }
 
 func (w *watcher) onChange(version string) error {
-	logrus.Debugf("onChange version: %v", version)
+	log.Debugf("onChange version: %v", version)
 	var err error
 
 	err = w.fetchInfoFromMetadata()
 	if err != nil {
-		logrus.Errorf("error fetching information from metadata: %v", err)
+		log.Errorf("error fetching information from metadata: %v", err)
 		return err
 	}
 
-	logrus.Debugf("Policy: %#v", w.defaultNetwork.Policy)
+	log.Debugf("Policy: %#v", w.defaultNetwork.Policy)
 
 	curNetworkPolicy, err := NewNetworkPolicy(w.defaultNetwork)
 	if err != nil {
-		logrus.Errorf("error creating network policy: %v", err)
+		log.Errorf("error creating network policy: %v", err)
 		return err
 	}
 
 	err = w.translatePolicy(curNetworkPolicy)
 	if err != nil {
-		logrus.Errorf("Error translating policy: %v", err)
+		log.Errorf("Error translating policy: %v", err)
 		return err
 	}
 
@@ -974,42 +974,42 @@ func (w *watcher) onChange(version string) error {
 	// the set names later in the iptables rules.
 
 	if !reflect.DeepEqual(w.appliedIPsets, w.ipsets) {
-		logrus.Infof("Applying new ipsets")
+		log.Infof("Applying new ipsets")
 
 		err := w.refreshIpsets()
 		if err != nil {
-			logrus.Errorf("error refreshing ipsets: %v", err)
+			log.Errorf("error refreshing ipsets: %v", err)
 			return err
 		}
 
 	} else {
-		logrus.Debugf("No change in ipsets")
+		log.Debugf("No change in ipsets")
 	}
 
 	if !reflect.DeepEqual(w.appliedRules, w.rules) {
-		logrus.Infof("Applying new rules")
+		log.Infof("Applying new rules")
 
 		err := w.applyIptablesRules(w.rules)
 		if err != nil {
-			logrus.Errorf("Error applying iptables rules: %v", err)
+			log.Errorf("Error applying iptables rules: %v", err)
 			return err
 		}
 
 		w.appliedRules = w.rules
 	} else {
-		logrus.Debugf("No change in applied rules")
+		log.Debugf("No change in applied rules")
 	}
 
 	if !reflect.DeepEqual(w.appliedIPsets, w.ipsets) {
 		if err := w.cleanupIpsets(); err != nil {
-			logrus.Errorf("Error cleaning ipsets: %v", err)
+			log.Errorf("Error cleaning ipsets: %v", err)
 		}
 		w.appliedIPsets = w.ipsets
 	}
 
 	w.appliednp = curNetworkPolicy
 
-	if logrus.GetLevel() == logrus.DebugLevel {
+	if log.GetLevelString() == "debug" {
 		w.printIpsetsMapping()
 	}
 
@@ -1017,49 +1017,49 @@ func (w *watcher) onChange(version string) error {
 }
 
 func (w *watcher) printIpsetsMapping() {
-	logrus.Debugf("ipsets names mapping: ")
+	log.Debugf("ipsets names mapping: ")
 	for k, v := range w.ipsetsNamesMap {
-		logrus.Debugf("%v -> %v", k, v)
+		log.Debugf("%v -> %v", k, v)
 	}
 }
 
 func (w *watcher) refreshIpsets() error {
-	logrus.Debugf("refreshing ipsets")
+	log.Debugf("refreshing ipsets")
 
 	var result error
 	for ipsetName, ipset := range w.ipsets {
 		oldipset := w.appliedIPsets[ipsetName]
 		if !reflect.DeepEqual(ipset, oldipset) {
-			logrus.Debugf("refreshing ipset: %v", ipsetName)
+			log.Debugf("refreshing ipset: %v", ipsetName)
 			tmpIPSetName := "TMP-" + ipsetName
 			if existsIPSet(tmpIPSetName) {
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", tmpIPSetName)
 				if err := executeCommand(deleteCmdStr); err != nil {
-					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					log.Errorf("error executing '%v': %v", deleteCmdStr, err)
 					result = multierror.Append(result, err)
 				}
 			}
 			if err := createIPSet(tmpIPSetName, ipset); err != nil {
-				logrus.Errorf("error creating ipset: %v", err)
+				log.Errorf("error creating ipset: %v", err)
 				result = multierror.Append(result, err)
 				continue
 			}
 			if existsIPSet(ipsetName) {
 				swapCmdStr := fmt.Sprintf("ipset swap %s %s", tmpIPSetName, ipsetName)
 				if err := executeCommand(swapCmdStr); err != nil {
-					logrus.Errorf("error executing '%v': %v", swapCmdStr, err)
+					log.Errorf("error executing '%v': %v", swapCmdStr, err)
 					result = multierror.Append(result, err)
 				}
 
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", tmpIPSetName)
 				if err := executeCommand(deleteCmdStr); err != nil {
-					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					log.Errorf("error executing '%v': %v", deleteCmdStr, err)
 					result = multierror.Append(result, err)
 				}
 			} else {
 				renameCmdStr := fmt.Sprintf("ipset rename %s %s", tmpIPSetName, ipsetName)
 				if err := executeCommand(renameCmdStr); err != nil {
-					logrus.Errorf("error executing '%v': %v", renameCmdStr, err)
+					log.Errorf("error executing '%v': %v", renameCmdStr, err)
 					result = multierror.Append(result, err)
 				}
 			}
@@ -1071,16 +1071,16 @@ func (w *watcher) refreshIpsets() error {
 }
 
 func (w *watcher) cleanupIpsets() error {
-	logrus.Debugf("ipsets cleanup")
+	log.Debugf("ipsets cleanup")
 
 	var result error
 	for ipsetName := range w.appliedIPsets {
 		_, existsInNew := w.appliedIPsets[ipsetName]
 		if !existsInNew {
-			logrus.Debugf("ipset: %v doesn't exist in new map, hence deleting ", ipsetName)
+			log.Debugf("ipset: %v doesn't exist in new map, hence deleting ", ipsetName)
 			deleteCmdStr := fmt.Sprintf("ipset destroy %s", ipsetName)
 			if err := executeCommand(deleteCmdStr); err != nil {
-				logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+				log.Errorf("error executing '%v': %v", deleteCmdStr, err)
 				result = multierror.Append(result, err)
 			}
 		}
@@ -1089,13 +1089,13 @@ func (w *watcher) cleanupIpsets() error {
 	cmd := "ipset -L | grep -B5 'References: 0' | grep 'Name: RNCH-'  | awk '{print $2}'"
 	out, err := exec.Command("bash", "-c", cmd).Output()
 	if err != nil {
-		logrus.Errorf("Failed to execute command: %s", cmd)
+		log.Errorf("Failed to execute command: %s", cmd)
 		return err
 	}
 
 	if len(out) > 0 {
 		staleIPSets := strings.Split(string(out), "\n")
-		logrus.Debugf("staleIPSets: %v", staleIPSets)
+		log.Debugf("staleIPSets: %v", staleIPSets)
 
 		if staleIPSets != nil && len(staleIPSets) > 0 {
 			for _, ipset := range staleIPSets {
@@ -1104,7 +1104,7 @@ func (w *watcher) cleanupIpsets() error {
 				}
 				deleteCmdStr := fmt.Sprintf("ipset destroy %s", ipset)
 				if err := executeCommand(deleteCmdStr); err != nil {
-					logrus.Errorf("error executing '%v': %v", deleteCmdStr, err)
+					log.Errorf("error executing '%v': %v", deleteCmdStr, err)
 					result = multierror.Append(result, err)
 				}
 			}
@@ -1122,19 +1122,19 @@ func (w *watcher) applyIptablesRules(rulesMap map[int]map[string]Rule) error {
 	for i := 0; i < len(rulesMap); i++ {
 		rules, ok := rulesMap[i]
 		if !ok {
-			logrus.Errorf("not expecting error here for i: %v", i)
+			log.Errorf("not expecting error here for i: %v", i)
 			continue
 		}
 
 		for ruleName, rule := range rules {
-			logrus.Debugf("ruleName: %v, rule: %v", ruleName, rule)
+			log.Debugf("ruleName: %v, rule: %v", ruleName, rule)
 			buf.Write(rule.iptables(w.defaultNetwork.DefaultPolicyAction))
 		}
 	}
 
 	buf.WriteString("\nCOMMIT\n")
 
-	if logrus.GetLevel() == logrus.DebugLevel {
+	if log.GetLevelString() == "debug" {
 		fmt.Printf("Applying rules\n%s", buf)
 	}
 
@@ -1143,7 +1143,7 @@ func (w *watcher) applyIptablesRules(rulesMap map[int]map[string]Rule) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stdin = buf
 	if err := cmd.Run(); err != nil {
-		logrus.Errorf("Failed to apply rules\n%s", buf)
+		log.Errorf("Failed to apply rules\n%s", buf)
 		return err
 	}
 
@@ -1155,7 +1155,7 @@ func (w *watcher) applyIptablesRules(rulesMap map[int]map[string]Rule) error {
 }
 
 func (w *watcher) run(args ...string) error {
-	logrus.Debugf("Running %s", strings.Join(args, " "))
+	log.Debugf("Running %s", strings.Join(args, " "))
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1188,12 +1188,12 @@ func (w *watcher) flushAndDeleteChain() error {
 	checkRule := fmt.Sprintf("iptables -w -L %v", cattleNetworkPolicyChainName)
 	if executeCommandNoStderr(checkRule) == nil {
 		if err := w.run("iptables", "-w", "-F", cattleNetworkPolicyChainName); err != nil {
-			logrus.Errorf("Error flushing the chain: %v", cattleNetworkPolicyChainName)
+			log.Errorf("Error flushing the chain: %v", cattleNetworkPolicyChainName)
 			return err
 		}
 
 		if err := w.run("iptables", "-X", cattleNetworkPolicyChainName); err != nil {
-			logrus.Errorf("Error deleting the chain: %v", cattleNetworkPolicyChainName)
+			log.Errorf("Error deleting the chain: %v", cattleNetworkPolicyChainName)
 			return err
 		}
 	}
@@ -1202,22 +1202,22 @@ func (w *watcher) flushAndDeleteChain() error {
 }
 
 func (w *watcher) cleanup() error {
-	logrus.Debugf("Doing cleanup")
+	log.Debugf("Doing cleanup")
 	// delete the base Rule
 	if err := w.deleteBaseRules(); err != nil {
-		logrus.Errorf("error deleting base rules: %v", err)
+		log.Errorf("error deleting base rules: %v", err)
 		return err
 	}
 
 	// Flush and delete the chain
 	if err := w.flushAndDeleteChain(); err != nil {
-		logrus.Errorf("error flusing and deleting chain: %v", err)
+		log.Errorf("error flusing and deleting chain: %v", err)
 		return err
 	}
 
 	// remove the ipsets
 	if err := w.cleanupIpsets(); err != nil {
-		logrus.Errorf("Error cleaning ipsets: %v", err)
+		log.Errorf("Error cleaning ipsets: %v", err)
 		return err
 	}
 

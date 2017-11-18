@@ -3,7 +3,8 @@ package main
 import (
 	"os"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/leodotcloud/log"
+	"github.com/leodotcloud/log/server"
 	"github.com/pkg/errors"
 	"github.com/rancher/go-rancher-metadata/metadata"
 	"github.com/rancher/network-policy-manager/policy"
@@ -36,11 +37,13 @@ func main() {
 }
 
 func run(c *cli.Context) error {
+	server.StartServerWithDefaults()
+
 	if c.Bool("debug") {
-		logrus.SetLevel(logrus.DebugLevel)
+		log.SetLevelString("debug")
 	}
 
-	logrus.Infof("Waiting for metadata")
+	log.Infof("Waiting for metadata")
 	mClient, err := metadata.NewClientAndWait(c.String("metadata-url"))
 	if err != nil {
 		return errors.Wrap(err, "Creating metadata client")
@@ -48,10 +51,10 @@ func run(c *cli.Context) error {
 
 	exitCh := make(chan int)
 	if err := policy.Watch(mClient, exitCh, c.Bool("cleanup")); err != nil {
-		logrus.Errorf("Failed to start policy-manger: %v", err)
+		log.Errorf("Failed to start policy-manger: %v", err)
 	}
 
 	<-exitCh
-	logrus.Infof("Program exiting")
+	log.Infof("Program exiting")
 	return nil
 }

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/leodotcloud/log"
 	"github.com/rancher/go-rancher-metadata/metadata"
 	//"gopkg.in/yaml.v2"
 )
@@ -54,8 +54,8 @@ func NewNetworkPolicy(network *metadata.Network) (*NetworkPolicy, error) {
 	}
 
 	if err := np.Validate(); err != nil {
-		logrus.Errorf("error validating policy: %#v", np)
-		logrus.Errorf("error: %v", err)
+		log.Errorf("error validating policy: %#v", np)
+		log.Errorf("error: %v", err)
 		return nil, err
 	}
 
@@ -64,7 +64,7 @@ func NewNetworkPolicy(network *metadata.Network) (*NetworkPolicy, error) {
 
 // ParseNetworkPolicyStr is used to parse the input yaml representation of the network policy and perform basic validations
 func ParseNetworkPolicyStr(npStr string) (*NetworkPolicy, error) {
-	logrus.Debugf("Parsing Network policy: %v", npStr)
+	log.Debugf("Parsing Network policy: %v", npStr)
 	if npStr == "" {
 		return nil, fmt.Errorf("empty policy string provided")
 	}
@@ -76,16 +76,16 @@ func ParseNetworkPolicyStr(npStr string) (*NetworkPolicy, error) {
 
 	err := json.Unmarshal([]byte(npStr), &arr)
 	if err != nil {
-		logrus.Errorf("got error: %v, while unmarshaling: %v", err, npStr)
+		log.Errorf("got error: %v, while unmarshaling: %v", err, npStr)
 		return nil, err
 	}
 	np.Rules = append(arr)
 
-	logrus.Debugf("%v", spew.Sprintf("parsed np: %#+v", np))
+	log.Debugf("%v", spew.Sprintf("parsed np: %#+v", np))
 
 	if err := np.Validate(); err != nil {
-		logrus.Errorf("error validating policy: %v", npStr)
-		logrus.Errorf("error: %v", err)
+		log.Errorf("error validating policy: %v", npStr)
+		log.Errorf("error: %v", err)
 		return nil, err
 	}
 
@@ -104,7 +104,7 @@ func (np *NetworkPolicy) Validate() error {
 
 // Validate runs basic validations on the policy
 func (rule *NetworkPolicyRule) Validate() error {
-	logrus.Debugf("validating rule: %v", spew.Sprintf("%#+v", rule))
+	log.Debugf("validating rule: %v", spew.Sprintf("%#+v", rule))
 	if rule.Within == "" &&
 		rule.Between == nil &&
 		rule.To == nil &&
