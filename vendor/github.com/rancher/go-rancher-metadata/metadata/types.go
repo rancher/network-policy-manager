@@ -43,8 +43,6 @@ type Service struct {
 	EnvironmentUUID    string                 `json:"environment_uuid"`
 	State              string                 `json:"state"`
 	System             bool                   `json:"system"`
-	EnvironmentName    string                 `json:"environment_name"`
-	Selector           string                 `json:"selector"`
 }
 
 type Container struct {
@@ -76,8 +74,6 @@ type Container struct {
 	System                   bool              `json:"system"`
 	EnvironmentUUID          string            `json:"environment_uuid"`
 	HealthCheck              HealthCheck       `json:"health_check"`
-	EnvironmentName          string            `json:"environment_name"`
-	ServiceUUID              string            `json:"service_uuid"`
 }
 
 type Network struct {
@@ -93,7 +89,9 @@ type Network struct {
 
 type Host struct {
 	Name            string            `json:"name"`
+	State           string            `json:"state"`
 	AgentIP         string            `json:"agent_ip"`
+	AgentState      string            `json:"agent_state"`
 	HostId          int               `json:"host_id"`
 	Labels          map[string]string `json:"labels"`
 	UUID            string            `json:"uuid"`
@@ -102,29 +100,30 @@ type Host struct {
 	MilliCPU        int64             `json:"milli_cpu"`
 	LocalStorageMb  int64             `json:"local_storage_mb"`
 	EnvironmentUUID string            `json:"environment_uuid"`
-	State           string            `json:"state"`
 }
 
 type PortRule struct {
-	SourcePort    int    `json:"source_port"`
-	Protocol      string `json:"protocol"`
-	Path          string `json:"path"`
-	Hostname      string `json:"hostname"`
-	Service       string `json:"service"`
-	TargetPort    int    `json:"target_port"`
-	Priority      int    `json:"priority"`
-	BackendName   string `json:"backend_name"`
-	Selector      string `json:"selector"`
-	Container     string `json:"container"`
-	ContainerUUID string `json:"container_uuid"`
+	SourcePort  int    `json:"source_port"`
+	Protocol    string `json:"protocol"`
+	Path        string `json:"path"`
+	Hostname    string `json:"hostname"`
+	Service     string `json:"service"`
+	TargetPort  int    `json:"target_port"`
+	Priority    int    `json:"priority"`
+	BackendName string `json:"backend_name"`
+	Selector    string `json:"selector"`
+	Container   string `json:"container"`
+	Region      string `json:"region"`
+	Environment string `json:"environment"`
+	Weight      int    `json:"weight"`
 }
 
 type LBConfig struct {
-	CertificateIDs       []string           `json:"certificate_ids"`
-	DefaultCertificateID string             `json:"default_certificate_id"`
-	PortRules            []PortRule         `json:"port_rules"`
-	Config               string             `json:"config"`
-	StickinessPolicy     LBStickinessPolicy `json:"stickiness_policy"`
+	Certs            []string           `json:"certs"`
+	DefaultCert      string             `json:"default_cert"`
+	PortRules        []PortRule         `json:"port_rules"`
+	Config           string             `json:"config"`
+	StickinessPolicy LBStickinessPolicy `json:"stickiness_policy"`
 }
 
 type LBStickinessPolicy struct {
@@ -153,4 +152,20 @@ type NetworkPolicyRule struct {
 	Within  string                    `yaml:"within"`
 	Between *NetworkPolicyRuleBetween `yaml:"between"`
 	Action  string                    `yaml:"action"`
+}
+
+type Region struct {
+	Name string `json:"region_name"`
+}
+
+type Environment struct {
+	Containers []Container `json:"containers"`
+	Hosts      []Host      `json:"hosts"`
+	Name       string      `json:"name"`
+	Networks   []Network   `json:"networks"`
+	RegionName string      `json:"region_name"`
+	Services   []Service   `json:"services"`
+	Stacks     []Stack     `json:"stacks"`
+	UUID       string      `json:"uuid"`
+	Version    string      `json:"version"`
 }
