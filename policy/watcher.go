@@ -16,6 +16,8 @@ import (
 	"github.com/mitchellh/hashstructure"
 	"github.com/pkg/errors"
 	"github.com/rancher/go-rancher-metadata/metadata"
+	selutil "github.com/rancher/go-rancher-metadata/util"
+	pmutils "github.com/rancher/plugin-manager/utils"
 )
 
 const (
@@ -35,6 +37,7 @@ type watcher struct {
 	signalCh            chan os.Signal
 	exitCh              chan int
 	defaultNetwork      *metadata.Network
+	validNetworks       map[string]*metadata.Network
 	defaultSubnet       string
 	stacks              []metadata.Stack
 	services            []metadata.Service
@@ -49,6 +52,9 @@ type watcher struct {
 	selfHost            *metadata.Host
 	appliednp           *NetworkPolicy
 	np                  *NetworkPolicy
+	name                string
+	regionName          string
+	environments        []metadata.Environment
 }
 
 // Rule is used to store the info need to be a iptables rule
@@ -192,19 +198,58 @@ func getBridgeSubnet(network *metadata.Network) (string, error) {
 	return "", fmt.Errorf("Couldn't find bridgeSubnet for network: %v", network)
 }
 
-func (w *watcher) getDefaultNetwork() (*metadata.Network, error) {
-	networks, err := w.c.GetNetworks()
+func (w *watcher) fetchNetworkInfo() error {
+	hasErrored := false
+	networks, _, err := pmutils.GetLocalNetworksAndRoutersFromMetadata(w.c)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	for _, n := range networks {
-		if n.Default {
-			return &n, nil
+	if len(networks) != 1 {
+		return fmt.Errorf("expected one local network, found: %v", len(networks))
+	}
+
+	w.defaultNetwork = &networks[0]
+	log.Debugf("defaultNetwork: %v", w.defaultNetwork)
+
+	w.validNetworks = make(map[string]*metadata.Network)
+	w.validNetworks[w.defaultNetwork.UUID] = &networks[0]
+
+	_, w.defaultSubnet = pmutils.GetBridgeInfo(*w.defaultNetwork, *w.selfHost)
+	log.Debugf("defaultSubnet: %v", w.defaultSubnet)
+
+	if w.regionName != "" {
+		for _, aEnvironment := range w.environments {
+			var aEnvNetworks []metadata.Network
+			if len(aEnvironment.Hosts) > 0 {
+				aEnvNetworks, _ = pmutils.GetLocalNetworksAndRouters(
+					aEnvironment.Networks,
+					aEnvironment.Hosts[0],
+					aEnvironment.Services,
+				)
+			}
+			//log.Debugf("aEnvNetworks: %v", aEnvNetworks)
+
+			if len(aEnvNetworks) != 1 {
+				log.Errorf("expected one network, but found %v for env=%v", len(aEnvNetworks), aEnvironment.Name)
+				hasErrored = true
+				continue
+			}
+			w.validNetworks[aEnvNetworks[0].UUID] = &aEnvNetworks[0]
 		}
 	}
 
-	return nil, fmt.Errorf("Couldn't find default network")
+	if hasErrored {
+		return fmt.Errorf("error fetching network info")
+	}
+
+	log.Debugf("validNetworks: %v", w.validNetworks)
+	return nil
+}
+
+func (w *watcher) isValidNetwork(uuid string) bool {
+	_, found := w.validNetworks[uuid]
+	return found
 }
 
 //
@@ -231,7 +276,7 @@ func (w *watcher) getContainersGroupedBy(label string) map[string]map[string]map
 		if aContainer.System {
 			continue
 		}
-		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+		if w.isValidNetwork(aContainer.NetworkUUID) {
 			if labelValue, labelExists := aContainer.Labels[label]; labelExists {
 				aLabelValueMap, aLabelValueMapExists := groupByMap[labelValue]
 				if !aLabelValueMapExists {
@@ -264,7 +309,7 @@ func (w *watcher) getInfoFromStack(stack metadata.Stack) (map[string]bool, map[s
 	all := make(map[string]bool)
 	for _, aService := range stack.Services {
 		for _, aContainer := range aService.Containers {
-			if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+			if w.isValidNetwork(aContainer.NetworkUUID) {
 				if aContainer.HostUUID == w.selfHost.UUID {
 					if aContainer.PrimaryIp != "" {
 						local[aContainer.PrimaryIp] = true
@@ -296,7 +341,7 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 	}
 
 	for _, aContainer := range service.Containers {
-		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+		if w.isValidNetwork(aContainer.NetworkUUID) {
 			if aContainer.HostUUID == w.selfHost.UUID {
 				if aContainer.PrimaryIp != "" {
 					local[aContainer.PrimaryIp] = true
@@ -319,7 +364,7 @@ func (w *watcher) getInfoFromService(service metadata.Service) (map[string]bool,
 		}
 
 		for _, aContainer := range sidekickService.Containers {
-			if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+			if w.isValidNetwork(aContainer.NetworkUUID) {
 				if aContainer.HostUUID == w.selfHost.UUID {
 					if aContainer.PrimaryIp != "" {
 						local[aContainer.PrimaryIp] = true
@@ -454,7 +499,7 @@ func (w *watcher) getAllLocalContainers() map[string]bool {
 		if aContainer.System {
 			continue
 		}
-		if aContainer.NetworkUUID == w.defaultNetwork.UUID {
+		if w.isValidNetwork(aContainer.NetworkUUID) {
 			if aContainer.HostUUID == w.selfHost.UUID {
 				if aContainer.PrimaryIp != "" {
 					all[aContainer.PrimaryIp] = true
@@ -648,7 +693,7 @@ func (w *watcher) withinLinkedHandler(p NetworkPolicyRule) (map[string]Rule, err
 	log.Debugf("withinLinkedHandler")
 	withinLinkedRulesMap := make(map[string]Rule)
 
-	linkedMappings := buildLinkedMappings(w.services)
+	linkedMappings := w.buildLinkedMappings()
 
 	for linkedTo, linkedFromMap := range linkedMappings {
 		log.Debugf("linkedTo: %v, linkedFromMap: %v", linkedTo, linkedFromMap)
@@ -722,29 +767,190 @@ func buildLinkedMappingsForContainers(
 	return linkedContainersMap
 }
 
-func buildLinkedMappings(services []metadata.Service) map[string]map[string]*metadata.Service {
-	log.Debugf("buildLinkedMappings")
+func (w *watcher) findLocalMatchingServices(remoteLB string, lb metadata.Service, match *map[string]map[string]*metadata.Service) {
+	//log.Debugf("finding local matching services for lb: %v", lb)
+	for _, aService := range w.services {
+		if aService.System {
+			continue
+		}
+		//log.Debugf("checking for match service: %v", aService.Name)
+		for _, aPortRule := range lb.LBConfig.PortRules {
+			if aPortRule.Selector == "" {
+				continue
+			}
 
+			if (aPortRule.Region != "" && aPortRule.Region != w.regionName) ||
+				(aPortRule.Environment != "" && aPortRule.Environment != w.name) {
+				continue
+			}
+
+			if selutil.IsSelectorMatch(aPortRule.Selector, aService.Labels) {
+				log.Debugf("sel: %v, match service: %v", aPortRule.Selector, aService.Name)
+				key := aService.StackName + "/" + aService.Name
+				if _, found := (*match)[key]; !found {
+					(*match)[key] = make(map[string]*metadata.Service)
+				}
+				lbKey := lb.StackName + "/" + lb.Name
+				if remoteLB != "" {
+					lbKey = remoteLB
+				}
+				(*match)[key][lbKey] = &lb
+			}
+		}
+	}
+
+	log.Debugf("localMatchingServices for lb[%v]: %v", lb.Name, match)
+}
+
+func (w *watcher) findRemoteMatchingServices(lb metadata.Service, match *map[string]map[string]*metadata.Service) {
+	//log.Debugf("finding local matching services for lb: %v", lb)
+	for _, aEnv := range w.environments {
+		for _, aService := range aEnv.Services {
+			if aService.System {
+				continue
+			}
+			//log.Debugf("checking for match service: %v", aService.Name)
+			for _, aPortRule := range lb.LBConfig.PortRules {
+				if aPortRule.Selector == "" {
+					continue
+				}
+
+				if (aPortRule.Region != "" && aPortRule.Region != aEnv.RegionName) ||
+					(aPortRule.Environment != "" && aPortRule.Environment != aEnv.Name) {
+					continue
+				}
+
+				if selutil.IsSelectorMatch(aPortRule.Selector, aService.Labels) {
+					log.Debugf("sel: %v, match service: %v", aPortRule.Selector, aService.Name)
+					key := aEnv.RegionName + "/" + aEnv.Name + "/" + aService.StackName + "/" + aService.Name
+					if _, found := (*match)[key]; !found {
+						(*match)[key] = make(map[string]*metadata.Service)
+					}
+					(*match)[key][lb.StackName+"/"+lb.Name] = &lb
+				}
+			}
+		}
+	}
+
+	log.Debugf("remoteMatchingServices for lb[%v]: %v", lb.Name, match)
+}
+
+func (w *watcher) buildLBSelectorMappings(linkedServiceMapPtr *map[string]map[string]*metadata.Service) {
+	// Walk through current env services to find lb services
+	var localLBServices []*metadata.Service
+	for index, aService := range w.services {
+		if aService.Kind != "loadBalancerService" {
+			continue
+		}
+		log.Debugf("found local lb: %v", aService.Name)
+		localLBServices = append(localLBServices, &w.services[index])
+	}
+	log.Debugf("localLBServices: %v", localLBServices)
+
+	// Find selector matching services in local and remote env
+	for _, aLBService := range localLBServices {
+		w.findLocalMatchingServices("", *aLBService, linkedServiceMapPtr)
+		w.findRemoteMatchingServices(*aLBService, linkedServiceMapPtr)
+	}
+
+	// Walk through remote env services to find lb services
+	remoteLBServices := make(map[string]*metadata.Service)
+	for envIndex, aRemoteEnv := range w.environments {
+		for index, aService := range aRemoteEnv.Services {
+			if aService.Kind != "loadBalancerService" {
+				continue
+			}
+			log.Debugf("found remote lb: %v", aService.Name)
+			lbKey := aRemoteEnv.RegionName + "/" + aRemoteEnv.Name + "/" + aService.StackName + "/" + aService.Name
+			remoteLBServices[lbKey] = &w.environments[envIndex].Services[index]
+		}
+	}
+	log.Debugf("remoteLBServices: %v", remoteLBServices)
+
+	// Find selector matching services in current env
+	for k, aRemoteLB := range remoteLBServices {
+		w.findLocalMatchingServices(k, *aRemoteLB, linkedServiceMapPtr)
+	}
+}
+
+func (w *watcher) buildLinkedMappings() map[string]map[string]*metadata.Service {
+	log.Debugf("buildLinkedMappings")
 	linkedServicesMap := make(map[string]map[string]*metadata.Service)
 
-	for index, service := range services {
+	for index, service := range w.services {
 		if service.System || len(service.Links) == 0 {
 			continue
 		}
 		//log.Debugf("service: %v", service)
-		log.Debugf("service.Links: %v", service.Links)
+		log.Debugf("service:%v service.Links: %v", service.Name, service.Links)
 		for linkedService := range service.Links {
+			//log.Debugf("linkedService='%v'", linkedService)
+			if linkedService == "" {
+				continue
+			}
 			linkedServiceLowerCase := strings.ToLower(linkedService)
 			if _, found := linkedServicesMap[linkedServiceLowerCase]; !found {
 				linkedServicesMap[linkedServiceLowerCase] = make(map[string]*metadata.Service)
 			}
 			sKey := service.StackName + "/" + service.Name
-			linkedServicesMap[linkedServiceLowerCase][sKey] = &services[index]
+			linkedServicesMap[linkedServiceLowerCase][sKey] = &w.services[index]
 		}
 	}
 
+	if w.regionName != "" {
+		for _, aEnv := range w.environments {
+			for index, aService := range aEnv.Services {
+				if aService.System || len(aService.Links) == 0 {
+					continue
+				}
+				//log.Debugf("aService: %v", aService)
+				log.Debugf("aService: %v aService.Links: %v", aService.Name, aService.Links)
+				for linkedService := range aService.Links {
+					//log.Debugf("linkedService='%v'", linkedService)
+					if linkedService == "" {
+						continue
+					}
+
+					if !isCrossRegionLink(linkedService) {
+						continue
+					}
+
+					isLocal, localLink := w.covertToLocalLink(linkedService)
+					if !isLocal {
+						log.Debugf("linkedService: %v not local", linkedService)
+						continue
+					}
+
+					linkedServiceLowerCase := strings.ToLower(localLink)
+					if _, found := linkedServicesMap[linkedServiceLowerCase]; !found {
+						linkedServicesMap[linkedServiceLowerCase] = make(map[string]*metadata.Service)
+					}
+					sKey := aEnv.RegionName + "/" + aEnv.Name + "/" + aService.StackName + "/" + aService.Name
+					linkedServicesMap[linkedServiceLowerCase][sKey] = &aEnv.Services[index]
+				}
+
+			}
+		}
+	}
+
+	w.buildLBSelectorMappings(&linkedServicesMap)
+
 	log.Debugf("linkedServicesMap: %v", linkedServicesMap)
 	return linkedServicesMap
+}
+
+func isCrossRegionLink(link string) bool {
+	return (strings.Count(link, "/") > 1)
+}
+
+func (w *watcher) covertToLocalLink(link string) (bool, string) {
+	splits := strings.SplitAfter(link, w.regionName+"/"+w.name+"/")
+	//log.Debugf("splits: %v", splits)
+	if len(splits) != 2 {
+		return false, ""
+	}
+
+	return true, splits[1]
 }
 
 func (w *watcher) withinPolicyHandler(p NetworkPolicyRule) (map[string]Rule, error) {
@@ -878,6 +1084,32 @@ func (w *watcher) translatePolicy(np *NetworkPolicy) error {
 }
 
 func (w *watcher) fetchInfoFromMetadata() error {
+	regionName, err := w.c.GetRegionName()
+	if err != nil {
+		log.Debugf("couldn't get region name from metadata: %v", err)
+	}
+	log.Debugf("regionName: %v", regionName)
+
+	environments, err := w.c.GetEnvironments()
+	if err != nil {
+		log.Errorf("error fetching environments: %v", err)
+		return err
+	}
+
+	version, err := w.c.GetName()
+	if err != nil {
+		log.Errorf("Error getting current environment version from metadata: %v", err)
+		return err
+	}
+	log.Debugf("version: %v", version)
+
+	name, err := w.c.GetName()
+	if err != nil {
+		log.Errorf("Error getting current environment name from metadata: %v", err)
+		return err
+	}
+	log.Debugf("name: %v", name)
+
 	stacks, err := w.c.GetStacks()
 	if err != nil {
 		log.Errorf("Error getting stacks from metadata: %v", err)
@@ -908,20 +1140,6 @@ func (w *watcher) fetchInfoFromMetadata() error {
 		return err
 	}
 
-	defaultNetwork, err := w.getDefaultNetwork()
-	if err != nil {
-		log.Errorf("Error while finding default network: %v", err)
-		return err
-	}
-	log.Debugf("defaultNetwork: %#v", defaultNetwork)
-
-	defaultSubnet, err := getBridgeSubnet(defaultNetwork)
-	if err != nil {
-		log.Errorf("Error while finding default subnet: %v", err)
-		return err
-	}
-	log.Debugf("defaultSubnet: %#v", defaultSubnet)
-
 	servicesMapByName := make(map[string]*metadata.Service)
 	for _, aStack := range stacks {
 		if aStack.System {
@@ -930,18 +1148,42 @@ func (w *watcher) fetchInfoFromMetadata() error {
 		for index, aService := range aStack.Services {
 			key := aStack.Name + "/" + aService.Name
 			servicesMapByName[key] = &aStack.Services[index]
+			if regionName != "" {
+				regionKey := name + "/" + regionName + "/" + aStack.Name + "/" + aService.Name
+				servicesMapByName[regionKey] = &aStack.Services[index]
+			}
+		}
+	}
+
+	if regionName != "" {
+		for _, aEnv := range environments {
+			for _, aStack := range aEnv.Stacks {
+				if aStack.System {
+					continue
+				}
+				for index, aService := range aStack.Services {
+					key := aEnv.RegionName + "/" + aEnv.Name + "/" + aStack.Name + "/" + aService.Name
+					servicesMapByName[key] = &aStack.Services[index]
+				}
+			}
 		}
 	}
 	log.Debugf("servicesMapByName: %v", servicesMapByName)
 
-	w.defaultNetwork = defaultNetwork
-	w.defaultSubnet = defaultSubnet
 	w.selfHost = &selfHost
 	w.stacks = stacks
 	w.services = services
 	w.containers = containers
 	w.containersMapByUUID = containersMapByUUID
 	w.servicesMapByName = servicesMapByName
+	w.name = name
+	w.regionName = regionName
+	w.environments = environments
+
+	if err = w.fetchNetworkInfo(); err != nil {
+		log.Errorf("error fetching network info: %v", err)
+		return err
+	}
 
 	return nil
 }
