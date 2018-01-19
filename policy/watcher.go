@@ -943,14 +943,25 @@ func isCrossRegionLink(link string) bool {
 	return (strings.Count(link, "/") > 1)
 }
 
+// Valid local links:
+// localRegionName/envName/stackName/serviceName
+// envName/stackName/serviceName
 func (w *watcher) covertToLocalLink(link string) (bool, string) {
-	splits := strings.SplitAfter(link, w.regionName+"/"+w.name+"/")
-	//log.Debugf("splits: %v", splits)
-	if len(splits) != 2 {
-		return false, ""
+	words := strings.Split(link, "/")
+	if len(words) == 4 {
+		splits := strings.SplitAfter(link, w.regionName+"/"+w.name+"/")
+		//log.Debugf("splits: %v", splits)
+		if len(splits) != 2 {
+			return true, splits[1]
+		}
+	} else if len(words) == 3 {
+		splits := strings.SplitAfter(link, w.name+"/")
+		//log.Debugf("splits: %v", splits)
+		if len(splits) == 2 {
+			return true, splits[1]
+		}
 	}
-
-	return true, splits[1]
+	return false, ""
 }
 
 func (w *watcher) withinPolicyHandler(p NetworkPolicyRule) (map[string]Rule, error) {
@@ -1149,7 +1160,7 @@ func (w *watcher) fetchInfoFromMetadata() error {
 			key := aStack.Name + "/" + aService.Name
 			servicesMapByName[key] = &aStack.Services[index]
 			if regionName != "" {
-				regionKey := name + "/" + regionName + "/" + aStack.Name + "/" + aService.Name
+				regionKey := regionName + "/" + name + "/" + aStack.Name + "/" + aService.Name
 				servicesMapByName[regionKey] = &aStack.Services[index]
 			}
 		}
@@ -1164,6 +1175,10 @@ func (w *watcher) fetchInfoFromMetadata() error {
 				for index, aService := range aStack.Services {
 					key := aEnv.RegionName + "/" + aEnv.Name + "/" + aStack.Name + "/" + aService.Name
 					servicesMapByName[key] = &aStack.Services[index]
+					if aEnv.RegionName == regionName {
+						localEnvKey := aEnv.Name + "/" + aStack.Name + "/" + aService.Name
+						servicesMapByName[localEnvKey] = &aStack.Services[index]
+					}
 				}
 			}
 		}
