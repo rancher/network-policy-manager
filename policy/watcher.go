@@ -17,6 +17,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rancher/go-rancher-metadata/metadata"
 	selutil "github.com/rancher/go-rancher-metadata/util"
+	"github.com/rancher/network-policy-manager/utils"
 	pmutils "github.com/rancher/plugin-manager/utils"
 )
 
@@ -947,21 +948,7 @@ func isCrossRegionLink(link string) bool {
 // localRegionName/envName/stackName/serviceName
 // envName/stackName/serviceName
 func (w *watcher) covertToLocalLink(link string) (bool, string) {
-	words := strings.Split(link, "/")
-	if len(words) == 4 {
-		splits := strings.SplitAfter(link, w.regionName+"/"+w.name+"/")
-		//log.Debugf("splits: %v", splits)
-		if len(splits) != 2 {
-			return true, splits[1]
-		}
-	} else if len(words) == 3 {
-		splits := strings.SplitAfter(link, w.name+"/")
-		//log.Debugf("splits: %v", splits)
-		if len(splits) == 2 {
-			return true, splits[1]
-		}
-	}
-	return false, ""
+	return utils.ConvertToLocalLink(link, w.regionName, w.name)
 }
 
 func (w *watcher) withinPolicyHandler(p NetworkPolicyRule) (map[string]Rule, error) {
