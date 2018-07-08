@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/leodotcloud/log"
 	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/rancher/log"
 	//"gopkg.in/yaml.v2"
 )
 

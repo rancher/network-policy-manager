@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/leodotcloud/log"
+	"github.com/rancher/log"
 )
 
 func execCmdNoStdoutNoStderr(cmd *exec.Cmd) error {

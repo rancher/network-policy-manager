@@ -3,7 +3,7 @@ package utils
 import (
 	"testing"
 
-	"github.com/leodotcloud/log"
+	"github.com/rancher/log"
 )
 
 func TestConvertToLocalLink(t *testing.T) {
