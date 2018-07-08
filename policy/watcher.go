@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-multierror"
-	"github.com/leodotcloud/log"
 	"github.com/mitchellh/hashstructure"
 	"github.com/pkg/errors"
 	"github.com/rancher/go-rancher-metadata/metadata"
 	selutil "github.com/rancher/go-rancher-metadata/util"
+	"github.com/rancher/log"
 	"github.com/rancher/network-policy-manager/utils"
 	pmutils "github.com/rancher/plugin-manager/utils"
 )

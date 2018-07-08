@@ -3,10 +3,10 @@ package main
 import (
 	"os"
 
-	"github.com/leodotcloud/log"
-	"github.com/leodotcloud/log/server"
 	"github.com/pkg/errors"
 	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/rancher/log"
+	"github.com/rancher/log/server"
 	"github.com/rancher/network-policy-manager/policy"
 	"github.com/urfave/cli"
 )
